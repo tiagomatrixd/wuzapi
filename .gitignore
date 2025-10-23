@@ -3,7 +3,7 @@ files/
 wuzapi
 .env
 .tool-versions
-
+iniciar.bat
 # Added by Claude Task Master
 # Logs
 logs
