@@ -50,11 +50,6 @@ var migrations = []Migration{
 		Name:  "add_s3_support",
 		UpSQL: addS3SupportSQL,
 	},
-	{
-		ID:    5,
-		Name:  "add_auto_sync_history",
-		UpSQL: addAutoSyncHistorySQL,
-	},
 }
 
 const changeIDToStringSQL = `
@@ -144,17 +139,6 @@ BEGIN
     
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 's3_retention_days') THEN
         ALTER TABLE users ADD COLUMN s3_retention_days INTEGER DEFAULT 30;
-    END IF;
-END $$;
-`
-
-const addAutoSyncHistorySQL = `
--- PostgreSQL version
-DO $$
-BEGIN
-    -- Add auto_sync_history column to control automatic history sync on reconnect
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'auto_sync_history') THEN
-        ALTER TABLE users ADD COLUMN auto_sync_history BOOLEAN DEFAULT TRUE;
     END IF;
 END $$;
 `
@@ -327,12 +311,6 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 			if err == nil {
 				err = addColumnIfNotExistsSQLite(tx, "users", "s3_retention_days", "INTEGER DEFAULT 30")
 			}
-		} else {
-			_, err = tx.Exec(migration.UpSQL)
-		}
-	} else if migration.ID == 5 {
-		if db.DriverName() == "sqlite" {
-			err = addColumnIfNotExistsSQLite(tx, "users", "auto_sync_history", "BOOLEAN DEFAULT 1")
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}

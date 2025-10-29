@@ -31,13 +31,12 @@ import (
 
 // db field declaration as *sqlx.DB
 type MyClient struct {
-	WAClient        *whatsmeow.Client
-	eventHandlerID  uint32
-	userID          string
-	token           string
-	subscriptions   []string
-	db              *sqlx.DB
-	autoSyncHistory bool
+	WAClient       *whatsmeow.Client
+	eventHandlerID uint32
+	userID         string
+	token          string
+	subscriptions  []string
+	db             *sqlx.DB
 }
 
 // addSessionInfo adds the connected session information to the postmap
@@ -239,7 +238,7 @@ func checkIfSubscribedToEvent(subscribedEvents []string, eventType string, userI
 
 // Connects to Whatsapp Websocket on server startup if last state was connected
 func (s *server) connectOnStartup() {
-	rows, err := s.db.Queryx("SELECT id,name,token,jid,webhook,events,proxy_url,CASE WHEN s3_enabled THEN 'true' ELSE 'false' END AS s3_enabled,media_delivery,COALESCE(auto_sync_history, 1) as auto_sync_history FROM users WHERE connected=1")
+	rows, err := s.db.Queryx("SELECT id,name,token,jid,webhook,events,proxy_url,CASE WHEN s3_enabled THEN 'true' ELSE 'false' END AS s3_enabled,media_delivery FROM users WHERE connected=1")
 	if err != nil {
 		log.Error().Err(err).Msg("DB Problem")
 		return
@@ -255,24 +254,22 @@ func (s *server) connectOnStartup() {
 		proxy_url := ""
 		s3_enabled := ""
 		media_delivery := ""
-		auto_sync_history := 1
-		err = rows.Scan(&txtid, &name, &token, &jid, &webhook, &events, &proxy_url, &s3_enabled, &media_delivery, &auto_sync_history)
+		err = rows.Scan(&txtid, &name, &token, &jid, &webhook, &events, &proxy_url, &s3_enabled, &media_delivery)
 		if err != nil {
 			log.Error().Err(err).Msg("DB Problem")
 			return
 		} else {
 			log.Info().Str("token", token).Msg("Connect to Whatsapp on startup")
 			v := Values{map[string]string{
-				"Id":              txtid,
-				"Name":            name,
-				"Jid":             jid,
-				"Webhook":         webhook,
-				"Token":           token,
-				"Proxy":           proxy_url,
-				"Events":          events,
-				"S3Enabled":       s3_enabled,
-				"MediaDelivery":   media_delivery,
-				"AutoSyncHistory": fmt.Sprintf("%d", auto_sync_history),
+				"Id":            txtid,
+				"Name":          name,
+				"Jid":           jid,
+				"Webhook":       webhook,
+				"Token":         token,
+				"Proxy":         proxy_url,
+				"Events":        events,
+				"S3Enabled":     s3_enabled,
+				"MediaDelivery": media_delivery,
 			}}
 			userinfocache.Set(token, v, cache.NoExpiration)
 			// Gets and set subscription to webhook events
@@ -422,16 +419,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	store.DeviceProps.Os = osName
 
 	clientManager.SetWhatsmeowClient(userID, client)
-
-	// Get auto_sync_history setting from database
-	var autoSyncHistory bool
-	err = s.db.Get(&autoSyncHistory, "SELECT COALESCE(auto_sync_history, 1) FROM users WHERE id=$1", userID)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to get auto_sync_history, defaulting to true")
-		autoSyncHistory = true
-	}
-
-	mycli := MyClient{client, 1, userID, token, subscriptions, s.db, autoSyncHistory}
+	mycli := MyClient{client, 1, userID, token, subscriptions, s.db}
 	mycli.eventHandlerID = mycli.WAClient.AddEventHandler(mycli.myEventHandler)
 
 	// CORREÇÃO: Armazenar o MyClient no clientManager
@@ -1146,11 +1134,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Add session info
 		mycli.addSessionInfo(postmap)
 	case *events.HistorySync:
-		// Check if auto sync history is enabled
-		if !mycli.autoSyncHistory {
-			log.Info().Str("userID", mycli.userID).Msg("HistorySync ignored - auto_sync_history is disabled")
-			return
-		}
 		postmap["type"] = "HistorySync"
 		dowebhook = 1
 		// Add session info

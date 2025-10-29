@@ -139,12 +139,6 @@
           <div class="description">Configure webhook URL and event subscriptions.</div>
         </div>
       </div>
-      <div class="purple card hidden widget" style="cursor: pointer;" id="autoSyncConfig">
-        <div class="content"><a class="ui purple right ribbon label">Config</a>
-          <div class="header">Auto Sync History</div>
-          <div class="description">Enable or disable automatic history sync on reconnect.</div>
-        </div>
-      </div>
     </div>
 
     <div class="ui horizontal divider widget"> User </div>
@@ -484,38 +478,6 @@
     <div class="actions">
       <div class="ui cancel button secondary">Cancel</div>
       <div class="ui positive right labeled icon button" id="saveProxyConfig">Save<i class="checkmark icon"></i></div>
-    </div>
-  </div>
-
-  <!-- Auto Sync History Configuration Modal -->
-  <div class="ui modal" id="modalAutoSyncConfig"><i class="close icon"></i>
-    <div class="header"> Auto Sync History Configuration </div>
-    <div class="content">
-      <div class="ui info message">
-        <div class="header">Auto Sync History Settings</div>
-        <p>Control whether to automatically synchronize offline messages when reconnecting to WhatsApp. When disabled, messages received while offline will not be synced automatically.</p>
-      </div>
-      <div class="ui form">
-        <div class="field">
-          <div class="ui toggle checkbox" id="autoSyncEnabledToggle">
-            <input type="checkbox" id="autoSyncEnabled" checked>
-            <label>Enable Auto Sync History</label>
-          </div>
-          <small>When enabled, offline messages are automatically synchronized on reconnect.</small>
-        </div>
-        <div class="ui warning message">
-          <div class="header">Important Notes</div>
-          <ul>
-            <li>When disabled, you won't receive messages that were sent while you were offline</li>
-            <li>This can help reduce bandwidth usage and webhook calls after reconnecting</li>
-            <li>You can manually request history sync using the /session/history endpoint</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-    <div class="actions">
-      <div class="ui cancel button secondary">Cancel</div>
-      <div class="ui positive right labeled icon button" id="saveAutoSyncConfig">Save<i class="checkmark icon"></i></div>
     </div>
   </div>
 
