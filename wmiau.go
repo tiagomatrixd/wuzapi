@@ -263,15 +263,15 @@ func (s *server) connectOnStartup() {
 		} else {
 			log.Info().Str("token", token).Msg("Connect to Whatsapp on startup")
 			v := Values{map[string]string{
-				"Id":             txtid,
-				"Name":           name,
-				"Jid":            jid,
-				"Webhook":        webhook,
-				"Token":          token,
-				"Proxy":          proxy_url,
-				"Events":         events,
-				"S3Enabled":      s3_enabled,
-				"MediaDelivery":  media_delivery,
+				"Id":              txtid,
+				"Name":            name,
+				"Jid":             jid,
+				"Webhook":         webhook,
+				"Token":           token,
+				"Proxy":           proxy_url,
+				"Events":          events,
+				"S3Enabled":       s3_enabled,
+				"MediaDelivery":   media_delivery,
 				"AutoSyncHistory": fmt.Sprintf("%d", auto_sync_history),
 			}}
 			userinfocache.Set(token, v, cache.NoExpiration)
@@ -422,7 +422,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	store.DeviceProps.Os = osName
 
 	clientManager.SetWhatsmeowClient(userID, client)
-	
+
 	// Get auto_sync_history setting from database
 	var autoSyncHistory bool
 	err = s.db.Get(&autoSyncHistory, "SELECT COALESCE(auto_sync_history, 1) FROM users WHERE id=$1", userID)
@@ -430,7 +430,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 		log.Warn().Err(err).Msg("Failed to get auto_sync_history, defaulting to true")
 		autoSyncHistory = true
 	}
-	
+
 	mycli := MyClient{client, 1, userID, token, subscriptions, s.db, autoSyncHistory}
 	mycli.eventHandlerID = mycli.WAClient.AddEventHandler(mycli.myEventHandler)
 
