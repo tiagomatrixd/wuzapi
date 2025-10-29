@@ -68,6 +68,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
+  // Initialize auto sync enabled checkbox
+  $('#autoSyncEnabledToggle').checkbox();
+
   // Initialize add instance proxy toggle
   $('#addInstanceProxyToggle').checkbox({
     onChange: function() {
@@ -287,6 +290,17 @@ document.addEventListener('DOMContentLoaded', function() {
   // Webhook Configuration
   document.getElementById('webhookConfig').addEventListener('click', function() {
     webhookModal();
+  });
+
+  // Auto Sync History Configuration
+  document.getElementById('autoSyncConfig').addEventListener('click', function() {
+    $('#modalAutoSyncConfig').modal({
+      onApprove: function() {
+        saveAutoSyncConfig();
+        return false;
+      }
+    }).modal('show');
+    loadAutoSyncConfig();
   });
 
   // S3 Test Connection
@@ -1612,6 +1626,66 @@ async function saveProxyConfig() {
     }
   } catch (error) {
     showError('Error saving proxy configuration');
+    console.error('Error:', error);
+  }
+}
+
+async function loadAutoSyncConfig() {
+  const token = getLocalStorageItem('token');
+  const myHeaders = new Headers();
+  myHeaders.append('token', token);
+  
+  try {
+    const res = await fetch(baseUrl + "/session/autosync", {
+      method: "GET",
+      headers: myHeaders
+    });
+    
+    const data = await res.json();
+    if (data.success && data.data) {
+      const enabled = data.data.Enabled || false;
+      if (enabled) {
+        $('#autoSyncEnabledToggle').checkbox('set checked');
+      } else {
+        $('#autoSyncEnabledToggle').checkbox('set unchecked');
+      }
+    }
+  } catch (error) {
+    console.error('Error loading auto sync config:', error);
+    // Default to checked if error
+    $('#autoSyncEnabledToggle').checkbox('set checked');
+  }
+}
+
+async function saveAutoSyncConfig() {
+  const token = getLocalStorageItem('token');
+  const myHeaders = new Headers();
+  myHeaders.append('token', token);
+  myHeaders.append('Content-Type', 'application/json');
+  
+  const enabled = $('#autoSyncEnabled').is(':checked');
+  
+  const config = {
+    enabled: enabled
+  };
+  
+  try {
+    const res = await fetch(baseUrl + "/session/autosync", {
+      method: "POST",
+      headers: myHeaders,
+      body: JSON.stringify(config)
+    });
+    
+    const data = await res.json();
+    if (data.success) {
+      const status = enabled ? 'enabled' : 'disabled';
+      showSuccess('Auto sync history ' + status + ' successfully');
+      $('#modalAutoSyncConfig').modal('hide');
+    } else {
+      showError('Failed to save auto sync configuration: ' + (data.error || 'Unknown error'));
+    }
+  } catch (error) {
+    showError('Error saving auto sync configuration');
     console.error('Error:', error);
   }
 }

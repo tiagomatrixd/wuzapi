@@ -5623,3 +5623,79 @@ func (s *server) DeleteS3Config() http.HandlerFunc {
 		}
 	}
 }
+
+// SetAutoSyncHistory configures whether to auto-sync history when reconnecting
+func (s *server) SetAutoSyncHistory() http.HandlerFunc {
+	type autoSyncStruct struct {
+		Enabled bool `json:"enabled"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		token := r.Context().Value("userinfo").(Values).Get("Token")
+
+		decoder := json.NewDecoder(r.Body)
+		var t autoSyncStruct
+		err := decoder.Decode(&t)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode payload"))
+			return
+		}
+
+		// Update database
+		_, err = s.db.Exec("UPDATE users SET auto_sync_history=$1 WHERE id=$2", t.Enabled, txtid)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("could not set auto_sync_history: %v", err)))
+			return
+		}
+
+		// Update cache
+		myuserinfo, found := userinfocache.Get(token)
+		if found {
+			v := updateUserInfo(myuserinfo, "AutoSyncHistory", fmt.Sprintf("%t", t.Enabled))
+			userinfocache.Set(token, v, cache.NoExpiration)
+		}
+
+		// Update active MyClient if connected
+		myclient := clientManager.GetMyClient(txtid)
+		if myclient != nil {
+			myclient.autoSyncHistory = t.Enabled
+			log.Info().Bool("enabled", t.Enabled).Str("userID", txtid).Msg("Updated auto_sync_history for active session")
+		}
+
+		response := map[string]interface{}{
+			"Details": "Auto sync history setting updated successfully",
+			"Enabled": t.Enabled,
+		}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+		} else {
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
+	}
+}
+
+// GetAutoSyncHistory retrieves the current auto_sync_history setting
+func (s *server) GetAutoSyncHistory() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+
+		var autoSyncHistory bool
+		err := s.db.Get(&autoSyncHistory, "SELECT COALESCE(auto_sync_history, 1) FROM users WHERE id=$1", txtid)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("could not get auto_sync_history setting"))
+			return
+		}
+
+		response := map[string]interface{}{
+			"Details": "Current auto sync history setting",
+			"Enabled": autoSyncHistory,
+		}
+		responseJson, err := json.Marshal(response)
+		if err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, err)
+		} else {
+			s.Respond(w, r, http.StatusOK, string(responseJson))
+		}
+	}
+}

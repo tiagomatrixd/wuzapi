@@ -91,6 +91,9 @@ func (s *server) routes() {
 	s.router.Handle("/session/s3/config", c.Then(s.DeleteS3Config())).Methods("DELETE")
 	s.router.Handle("/session/s3/test", c.Then(s.TestS3Connection())).Methods("POST")
 
+	s.router.Handle("/session/autosync", c.Then(s.SetAutoSyncHistory())).Methods("POST")
+	s.router.Handle("/session/autosync", c.Then(s.GetAutoSyncHistory())).Methods("GET")
+
 	s.router.Handle("/chat/send/text", c.Then(s.SendMessage())).Methods("POST")
 	s.router.Handle("/chat/delete", c.Then(s.DeleteMessage())).Methods("POST")
 	s.router.Handle("/chat/send/image", c.Then(s.SendImage())).Methods("POST")
