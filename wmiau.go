@@ -588,7 +588,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	switch evt := rawEvt.(type) {
 	case *events.AppStateSyncComplete:
 		if len(mycli.WAClient.Store.PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
-			err := mycli.WAClient.SendPresence(types.PresenceAvailable)
+			err := mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
 			if err != nil {
 				log.Warn().Err(err).Msg("Failed to send available presence")
 			} else {
@@ -605,7 +605,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 		// Send presence available when connecting and when the pushname is changed.
 		// This makes sure that outgoing messages always have the right pushname.
-		err := mycli.WAClient.SendPresence(types.PresenceAvailable)
+		err := mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to send available presence")
 		} else {
@@ -1062,7 +1062,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Check if message is from a group and add group metadata
 		if evt.Info.IsGroup {
 			groupJID := evt.Info.Chat
-			groupInfo, err := mycli.WAClient.GetGroupInfo(groupJID)
+			groupInfo, err := mycli.WAClient.GetGroupInfo(context.Background(), groupJID)
 			if err != nil {
 				log.Warn().Err(err).Str("groupJID", groupJID.String()).Msg("Failed to get group info for webhook")
 			} else {
@@ -1101,27 +1101,28 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 
 	case *events.Receipt:
-		postmap["type"] = "ReadReceipt"
-		dowebhook = 1
-		//if evt.Type == events.ReceiptTypeRead || evt.Type == events.ReceiptTypeReadSelf {
-		if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
-			log.Info().Strs("id", evt.MessageIDs).Str("source", evt.SourceString()).Str("timestamp", fmt.Sprintf("%v", evt.Timestamp)).Msg("Message was read")
-			//if evt.Type == events.ReceiptTypeRead {
-			if evt.Type == types.ReceiptTypeRead {
-				postmap["state"] = "Read"
-			} else {
-				postmap["state"] = "ReadSelf"
-			}
-			//} else if evt.Type == events.ReceiptTypeDelivered {
-		} else if evt.Type == types.ReceiptTypeDelivered {
-			postmap["state"] = "Delivered"
-			log.Info().Str("id", evt.MessageIDs[0]).Str("source", evt.SourceString()).Str("timestamp", fmt.Sprintf("%v", evt.Timestamp)).Msg("Message delivered")
-		} else {
-			// Discard webhooks for inactive or other delivery types
-			return
-		}
-		// Add session info
-		mycli.addSessionInfo(postmap)
+		// postmap["type"] = "ReadReceipt"
+		// dowebhook = 1
+		// //if evt.Type == events.ReceiptTypeRead || evt.Type == events.ReceiptTypeReadSelf {
+		// if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
+		// 	log.Info().Strs("id", evt.MessageIDs).Str("source", evt.SourceString()).Str("timestamp", fmt.Sprintf("%v", evt.Timestamp)).Msg("Message was read")
+		// 	//if evt.Type == events.ReceiptTypeRead {
+		// 	if evt.Type == types.ReceiptTypeRead {
+		// 		postmap["state"] = "Read"
+		// 	} else {
+		// 		postmap["state"] = "ReadSelf"
+		// 	}
+		// 	//} else if evt.Type == events.ReceiptTypeDelivered {
+		// } else if evt.Type == types.ReceiptTypeDelivered {
+		// 	postmap["state"] = "Delivered"
+		// 	log.Info().Str("id", evt.MessageIDs[0]).Str("source", evt.SourceString()).Str("timestamp", fmt.Sprintf("%v", evt.Timestamp)).Msg("Message delivered")
+		// } else {
+		// 	// Discard webhooks for inactive or other delivery types
+		// 	return
+		// }
+		// // Add session info
+		// mycli.addSessionInfo(postmap)
+		return
 	case *events.Presence:
 		postmap["type"] = "Presence"
 		dowebhook = 1

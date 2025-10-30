@@ -2975,12 +2975,11 @@ func (s *server) CheckUser() http.HandlerFunc {
 			return
 		}
 
-		resp, err := clientManager.GetWhatsmeowClient(txtid).IsOnWhatsApp(t.Phone)
+		resp, err := clientManager.GetWhatsmeowClient(txtid).IsOnWhatsApp(context.Background(), t.Phone)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("failed to check if users are on WhatsApp: %s", err)))
 			return
 		}
-
 		uc := new(UserCollection)
 		for _, item := range resp {
 			if item.VerifiedName != nil {
@@ -3042,7 +3041,7 @@ func (s *server) GetUser() http.HandlerFunc {
 			}
 			jids = append(jids, jid)
 		}
-		resp, err := clientManager.GetWhatsmeowClient(txtid).GetUserInfo(jids)
+		resp, err := clientManager.GetWhatsmeowClient(txtid).GetUserInfo(context.Background(), jids)
 
 		if err != nil {
 			msg := fmt.Sprintf("Failed to get user info: %v", err)
@@ -3106,7 +3105,7 @@ func (s *server) SendPresence() http.HandlerFunc {
 
 		log.Info().Str("presence", pre.Type).Msg("Your global presence status")
 
-		err = clientManager.GetWhatsmeowClient(txtid).SendPresence(presence)
+		err = clientManager.GetWhatsmeowClient(txtid).SendPresence(context.Background(), presence)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("failure sending presence to Whatsapp servers"))
 			return
@@ -3194,7 +3193,7 @@ func (s *server) GetAvatar() http.HandlerFunc {
 		// Get avatar in goroutine
 		go func() {
 			existingID := ""
-			pic, err := clientManager.GetWhatsmeowClient(txtid).GetProfilePictureInfo(jid, &whatsmeow.GetProfilePictureParams{
+			pic, err := clientManager.GetWhatsmeowClient(txtid).GetProfilePictureInfo(context.Background(), jid, &whatsmeow.GetProfilePictureParams{
 				Preview:    t.Preview,
 				ExistingID: existingID,
 			})
@@ -3359,7 +3358,7 @@ func (s *server) ChatPresence() http.HandlerFunc {
 			return
 		}
 
-		err = clientManager.GetWhatsmeowClient(txtid).SendChatPresence(jid, types.ChatPresence(t.State), types.ChatPresenceMedia(t.Media))
+		err = clientManager.GetWhatsmeowClient(txtid).SendChatPresence(context.Background(), jid, types.ChatPresence(t.State), types.ChatPresenceMedia(t.Media))
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("failure sending chat presence to Whatsapp servers"))
 			return
@@ -3823,7 +3822,13 @@ func (s *server) MarkRead() http.HandlerFunc {
 			return
 		}
 
-		err = clientManager.GetWhatsmeowClient(txtid).MarkRead(t.Id, time.Now(), t.Chat, t.Sender)
+		// Convert []string to []types.MessageID
+		msgIDs := make([]types.MessageID, len(t.Id))
+		for i, id := range t.Id {
+			msgIDs[i] = types.MessageID(id)
+		}
+
+		err = clientManager.GetWhatsmeowClient(txtid).MarkRead(context.Background(), msgIDs, time.Now(), t.Chat, t.Sender)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("failure marking messages as read"))
 			return
@@ -3910,7 +3915,7 @@ func (s *server) GetGroupInfo() http.HandlerFunc {
 			return
 		}
 
-		resp, err := clientManager.GetWhatsmeowClient(txtid).GetGroupInfo(group)
+		resp, err := clientManager.GetWhatsmeowClient(txtid).GetGroupInfo(context.Background(), group)
 
 		if err != nil {
 			msg := fmt.Sprintf("Failed to get group info: %v", err)
@@ -3973,7 +3978,7 @@ func (s *server) GetGroupInviteLink() http.HandlerFunc {
 			return
 		}
 
-		resp, err := clientManager.GetWhatsmeowClient(txtid).GetGroupInviteLink(group, reset)
+		resp, err := clientManager.GetWhatsmeowClient(txtid).GetGroupInviteLink(context.Background(), group, reset)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("Failed to get group invite link")
@@ -4024,7 +4029,7 @@ func (s *server) GroupJoin() http.HandlerFunc {
 			return
 		}
 
-		_, err = clientManager.GetWhatsmeowClient(txtid).JoinGroupWithLink(t.Code)
+		_, err = clientManager.GetWhatsmeowClient(txtid).JoinGroupWithLink(context.Background(), t.Code)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to join group")
@@ -4149,7 +4154,7 @@ func (s *server) SetGroupLocked() http.HandlerFunc {
 			return
 		}
 
-		err = clientManager.GetWhatsmeowClient(txtid).SetGroupLocked(group, t.Locked)
+		err = clientManager.GetWhatsmeowClient(txtid).SetGroupLocked(context.Background(), group, t.Locked)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to set group locked")
@@ -4222,7 +4227,7 @@ func (s *server) SetDisappearingTimer() http.HandlerFunc {
 			return
 		}
 
-		err = clientManager.GetWhatsmeowClient(txtid).SetDisappearingTimer(group, duration, time.Now())
+		err = clientManager.GetWhatsmeowClient(txtid).SetDisappearingTimer(context.Background(), group, duration, time.Now())
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to set disappearing timer")
@@ -4274,7 +4279,7 @@ func (s *server) RemoveGroupPhoto() http.HandlerFunc {
 			return
 		}
 
-		_, err = clientManager.GetWhatsmeowClient(txtid).SetGroupPhoto(group, nil)
+		_, err = clientManager.GetWhatsmeowClient(txtid).SetGroupPhoto(context.Background(), group, nil)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to remove group photo")
@@ -4365,7 +4370,7 @@ func (s *server) UpdateGroupParticipants() http.HandlerFunc {
 			return
 		}
 
-		_, err = clientManager.GetWhatsmeowClient(txtid).UpdateGroupParticipants(group, phoneParsed, action)
+		_, err = clientManager.GetWhatsmeowClient(txtid).UpdateGroupParticipants(context.Background(), group, phoneParsed, action)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to change participant group")
@@ -4416,7 +4421,7 @@ func (s *server) GetGroupInviteInfo() http.HandlerFunc {
 			return
 		}
 
-		groupInfo, err := clientManager.GetWhatsmeowClient(txtid).GetGroupInfoFromLink(t.Code)
+		groupInfo, err := clientManager.GetWhatsmeowClient(txtid).GetGroupInfoFromLink(context.Background(), t.Code)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to get group invite info")
@@ -4501,7 +4506,7 @@ func (s *server) SetGroupPhoto() http.HandlerFunc {
 			return
 		}
 
-		picture_id, err := clientManager.GetWhatsmeowClient(txtid).SetGroupPhoto(group, filedata)
+		picture_id, err := clientManager.GetWhatsmeowClient(txtid).SetGroupPhoto(context.Background(), group, filedata)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to set group photo")
@@ -4559,7 +4564,7 @@ func (s *server) SetGroupName() http.HandlerFunc {
 			return
 		}
 
-		err = clientManager.GetWhatsmeowClient(txtid).SetGroupName(group, t.Name)
+		err = clientManager.GetWhatsmeowClient(txtid).SetGroupName(context.Background(), group, t.Name)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to set group name")
@@ -4617,7 +4622,7 @@ func (s *server) SetGroupTopic() http.HandlerFunc {
 			return
 		}
 
-		err = clientManager.GetWhatsmeowClient(txtid).SetGroupTopic(group, "", "", t.Topic)
+		err = clientManager.GetWhatsmeowClient(txtid).SetGroupTopic(context.Background(), group, "", "", t.Topic)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to set group topic")
@@ -4669,7 +4674,7 @@ func (s *server) GroupLeave() http.HandlerFunc {
 			return
 		}
 
-		err = clientManager.GetWhatsmeowClient(txtid).LeaveGroup(group)
+		err = clientManager.GetWhatsmeowClient(txtid).LeaveGroup(context.Background(), group)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to leave group")
@@ -4722,7 +4727,7 @@ func (s *server) SetGroupAnnounce() http.HandlerFunc {
 			return
 		}
 
-		err = clientManager.GetWhatsmeowClient(txtid).SetGroupAnnounce(group, t.Announce)
+		err = clientManager.GetWhatsmeowClient(txtid).SetGroupAnnounce(context.Background(), group, t.Announce)
 
 		if err != nil {
 			log.Error().Str("error", fmt.Sprintf("%v", err)).Msg("failed to set group announce")
@@ -4760,7 +4765,7 @@ func (s *server) ListNewsletter() http.HandlerFunc {
 			return
 		}
 
-		resp, err := clientManager.GetWhatsmeowClient(txtid).GetSubscribedNewsletters()
+		resp, err := clientManager.GetWhatsmeowClient(txtid).GetSubscribedNewsletters(context.Background())
 
 		if err != nil {
 			msg := fmt.Sprintf("failed to get newsletter list: %v", err)
@@ -5623,3 +5628,4 @@ func (s *server) DeleteS3Config() http.HandlerFunc {
 		}
 	}
 }
+
