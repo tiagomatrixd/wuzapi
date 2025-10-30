@@ -5628,4 +5628,3 @@ func (s *server) DeleteS3Config() http.HandlerFunc {
 		}
 	}
 }
-
