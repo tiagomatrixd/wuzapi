@@ -402,6 +402,11 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 		client = whatsmeow.NewClient(deviceStore, nil)
 	}
 
+	// Disable automatic history sync to improve performance and reduce bandwidth
+	// When set to true, history sync must be manually requested via /session/history endpoint
+	client.ManualHistorySyncDownload = true
+	log.Info().Msg("Automatic history sync disabled - manual download only")
+
 	// Now we can use the client with the manager
 	clientManager.SetWhatsmeowClient(userID, client)
 	if textjid != "" {
