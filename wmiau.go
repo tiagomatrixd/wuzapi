@@ -1134,10 +1134,10 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Add session info
 		mycli.addSessionInfo(postmap)
 	case *events.HistorySync:
-		postmap["type"] = "HistorySync"
-		dowebhook = 1
-		// Add session info
-		mycli.addSessionInfo(postmap)
+		// History sync events are ignored by default to improve performance
+		// They can be explicitly requested via the /session/history endpoint if needed
+		log.Debug().Msg("HistorySync event received and ignored")
+		return
 	case *events.AppState:
 		log.Info().Str("index", fmt.Sprintf("%+v", evt.Index)).Str("actionValue", fmt.Sprintf("%+v", evt.SyncActionValue)).Msg("App state event received")
 	case *events.LoggedOut:
