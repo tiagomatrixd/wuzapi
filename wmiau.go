@@ -1195,21 +1195,21 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// mycli.addSessionInfo(postmap)
 		return
 	case *events.Presence:
-		postmap["type"] = "Presence"
-		dowebhook = 1
-		if evt.Unavailable {
-			postmap["state"] = "offline"
-			if evt.LastSeen.IsZero() {
-				log.Info().Str("from", evt.From.String()).Msg("User is now offline")
-			} else {
-				log.Info().Str("from", evt.From.String()).Str("lastSeen", fmt.Sprintf("%v", evt.LastSeen)).Msg("User is now offline")
-			}
-		} else {
-			postmap["state"] = "online"
-			log.Info().Str("from", evt.From.String()).Msg("User is now online")
-		}
-		// Add session info
-		mycli.addSessionInfo(postmap)
+		// postmap["type"] = "Presence"
+		// dowebhook = 1
+		// if evt.Unavailable {
+		// 	postmap["state"] = "offline"
+		// 	if evt.LastSeen.IsZero() {
+		// 		log.Info().Str("from", evt.From.String()).Msg("User is now offline")
+		// 	} else {
+		// 		log.Info().Str("from", evt.From.String()).Str("lastSeen", fmt.Sprintf("%v", evt.LastSeen)).Msg("User is now offline")
+		// 	}
+		// } else {
+		// 	postmap["state"] = "online"
+		// 	log.Info().Str("from", evt.From.String()).Msg("User is now online")
+		// }
+		// // Add session info
+		// mycli.addSessionInfo(postmap)
 	case *events.HistorySync:
 		// History sync events are ignored by default to improve performance
 		// They can be explicitly requested via the /session/history endpoint if needed
@@ -1231,11 +1231,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			return
 		}
 	case *events.ChatPresence:
-		postmap["type"] = "ChatPresence"
-		dowebhook = 1
-		// Add session info
-		mycli.addSessionInfo(postmap)
-		log.Info().Str("state", fmt.Sprintf("%s", evt.State)).Str("media", fmt.Sprintf("%s", evt.Media)).Str("chat", evt.MessageSource.Chat.String()).Str("sender", evt.MessageSource.Sender.String()).Msg("Chat Presence received")
+		// postmap["type"] = "ChatPresence"
+		// dowebhook = 1
+		// // Add session info
+		// mycli.addSessionInfo(postmap)
+		// log.Info().Str("state", fmt.Sprintf("%s", evt.State)).Str("media", fmt.Sprintf("%s", evt.Media)).Str("chat", evt.MessageSource.Chat.String()).Str("sender", evt.MessageSource.Sender.String()).Msg("Chat Presence received")
+		return
 	case *events.CallOffer:
 		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call offer")
 	case *events.CallAccept:

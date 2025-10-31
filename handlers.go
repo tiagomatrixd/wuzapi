@@ -2722,58 +2722,58 @@ func (s *server) SendEditMessage() http.HandlerFunc {
 }
 
 // Request History Sync
-func (s *server) RequestHistorySync() http.HandlerFunc {
+// func (s *server) RequestHistorySync() http.HandlerFunc {
 
-	return func(w http.ResponseWriter, r *http.Request) {
+// 	return func(w http.ResponseWriter, r *http.Request) {
 
-		var resp whatsmeow.SendResponse
-		var err error
+// 		var resp whatsmeow.SendResponse
+// 		var err error
 
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+// 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
-			return
-		}
+// 		if clientManager.GetWhatsmeowClient(txtid) == nil {
+// 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+// 			return
+// 		}
 
-		info, found := lastMessageCache.Get(txtid)
-		if !found {
-			info = &types.MessageInfo{}
-		}
+// 		info, found := lastMessageCache.Get(txtid)
+// 		if !found {
+// 			info = &types.MessageInfo{}
+// 		}
 
-		historyMsg := clientManager.GetWhatsmeowClient(txtid).BuildHistorySyncRequest(info.(*types.MessageInfo), 50)
-		if historyMsg == nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to build history sync request."))
-			return
-		}
+// 		historyMsg := clientManager.GetWhatsmeowClient(txtid).BuildHistorySyncRequest(info.(*types.MessageInfo), 50)
+// 		if historyMsg == nil {
+// 			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to build history sync request."))
+// 			return
+// 		}
 
-		targetJID := types.JID{Server: "s.whatsapp.net", User: "status"}
-		log.Debug().Str("userID", txtid).Str("target", targetJID.String()).Msg("Preparing to send history sync request")
+// 		targetJID := types.JID{Server: "s.whatsapp.net", User: "status"}
+// 		log.Debug().Str("userID", txtid).Str("target", targetJID.String()).Msg("Preparing to send history sync request")
 
-		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), clientManager.GetMyClient(txtid).WAClient.Store.ID.ToNonAD(), historyMsg, whatsmeow.SendRequestExtra{Peer: true})
-		if err != nil {
-			log.Error().
-				Str("userID", txtid).
-				Err(err).
-				Interface("target_jid", targetJID).
-				Interface("history_msg", historyMsg).
-				Msg("Failed to send history sync request")
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to request history sync."))
-			return
-		}
+// 		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), clientManager.GetMyClient(txtid).WAClient.Store.ID.ToNonAD(), historyMsg, whatsmeow.SendRequestExtra{Peer: true})
+// 		if err != nil {
+// 			log.Error().
+// 				Str("userID", txtid).
+// 				Err(err).
+// 				Interface("target_jid", targetJID).
+// 				Interface("history_msg", historyMsg).
+// 				Msg("Failed to send history sync request")
+// 			s.Respond(w, r, http.StatusInternalServerError, errors.New("Failed to request history sync."))
+// 			return
+// 		}
 
-		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Msg("History sync request sent")
-		response := map[string]interface{}{"Details": "History sync request Sent", "Timestamp": resp.Timestamp.Unix()}
-		responseJson, err := json.Marshal(response)
-		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, err)
-		} else {
-			s.Respond(w, r, http.StatusOK, string(responseJson))
-		}
+// 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Msg("History sync request sent")
+// 		response := map[string]interface{}{"Details": "History sync request Sent", "Timestamp": resp.Timestamp.Unix()}
+// 		responseJson, err := json.Marshal(response)
+// 		if err != nil {
+// 			s.Respond(w, r, http.StatusInternalServerError, err)
+// 		} else {
+// 			s.Respond(w, r, http.StatusOK, string(responseJson))
+// 		}
 
-		return
-	}
-}
+// 		return
+// 	}
+// }
 
 /*
 // Sends a Template message
