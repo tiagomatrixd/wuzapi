@@ -225,7 +225,7 @@ func processMediaAsync(mycli *MyClient, evt *events.Message, mediaType string, d
 		}()
 
 		log.Debug().Str("messageID", evt.Info.ID).Str("mediaType", mediaType).Msg("Starting async media processing")
-		
+
 		data, mimeType, extension, err := downloadFunc()
 		if err != nil {
 			log.Error().Err(err).Str("mediaType", mediaType).Msg("Failed to download media asynchronously")
@@ -239,7 +239,7 @@ func processMediaAsync(mycli *MyClient, evt *events.Message, mediaType string, d
 			Str("extension", extension).
 			Int("size", len(data)).
 			Msg("Media downloaded successfully (async)")
-		
+
 		// Here you could send a separate webhook with the media if needed
 		// For now, we just log success. The main message webhook was already sent without media
 	}()
@@ -1118,7 +1118,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		if evt.Info.IsGroup {
 			groupJID := evt.Info.Chat
 			cacheKey := groupJID.String()
-			
+
 			// Try to get from cache first
 			var groupMetadata map[string]interface{}
 			if cached, found := groupInfoCache.Get(cacheKey); found {
@@ -1160,12 +1160,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 						"desc":           groupInfo.GroupTopic.Topic,
 						"addressingMode": groupInfo.AddressingMode,
 					}
-					
+
 					// Cache the group metadata for 5 minutes
 					groupInfoCache.Set(cacheKey, groupMetadata, cache.DefaultExpiration)
 				}
 			}
-			
+
 			if groupMetadata != nil {
 				postmap["groupMetadata"] = groupMetadata
 			}
