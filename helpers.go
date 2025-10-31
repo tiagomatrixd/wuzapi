@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/rs/zerolog/log"
@@ -38,6 +39,8 @@ func callHook(myurl string, payload map[string]string, id string) {
 	}
 
 	client := clientManager.GetHTTPClient(id)
+	// Set timeout to prevent hanging webhooks
+	client.SetTimeout(15 * time.Second)
 
 	format := os.Getenv("WEBHOOK_FORMAT")
 	if format == "json" {

@@ -214,6 +214,37 @@ func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path 
 	go sendToGlobalRabbit(jsonData)
 }
 
+// processMediaAsync processes media (image/video/audio/document) asynchronously
+// This prevents blocking the main event handler during downloads
+func processMediaAsync(mycli *MyClient, evt *events.Message, mediaType string, downloadFunc func() ([]byte, string, string, error)) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error().Interface("panic", r).Str("mediaType", mediaType).Msg("Recovered from panic in async media processing")
+			}
+		}()
+
+		log.Debug().Str("messageID", evt.Info.ID).Str("mediaType", mediaType).Msg("Starting async media processing")
+		
+		data, mimeType, extension, err := downloadFunc()
+		if err != nil {
+			log.Error().Err(err).Str("mediaType", mediaType).Msg("Failed to download media asynchronously")
+			return
+		}
+
+		log.Info().
+			Str("messageID", evt.Info.ID).
+			Str("mediaType", mediaType).
+			Str("mimeType", mimeType).
+			Str("extension", extension).
+			Int("size", len(data)).
+			Msg("Media downloaded successfully (async)")
+		
+		// Here you could send a separate webhook with the media if needed
+		// For now, we just log success. The main message webhook was already sent without media
+	}()
+}
+
 func checkIfSubscribedToEvent(subscribedEvents []string, eventType string, userId string) bool {
 	// Special case: HistorySync is excluded when "All" is selected
 	if eventType == "HistorySync" && Find(subscribedEvents, "All") && !Find(subscribedEvents, "HistorySync") {
@@ -679,7 +710,10 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 
 		log.Info().Str("id", evt.Info.ID).Str("source", evt.Info.SourceString()).Str("parts", strings.Join(metaParts, ", ")).Msg("Message Received")
 
-		if !*skipMedia {
+		// MEDIA DOWNLOAD DISABLED FOR PERFORMANCE
+		// Since S3 is not used, we skip all media downloads to improve speed dramatically
+		// This prevents 10-30+ second delays per message with media
+		if false && !*skipMedia {
 			// try to get Image if any
 			img := evt.Message.GetImageMessage()
 			if img != nil {
@@ -1050,6 +1084,27 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			postmap["body"] = messageText
 		}
 
+		// Add media type information WITHOUT downloading (for performance)
+		if evt.Message.GetImageMessage() != nil {
+			postmap["mediaType"] = "image"
+			postmap["mimeType"] = evt.Message.GetImageMessage().GetMimetype()
+		} else if evt.Message.GetVideoMessage() != nil {
+			postmap["mediaType"] = "video"
+			postmap["mimeType"] = evt.Message.GetVideoMessage().GetMimetype()
+		} else if evt.Message.GetAudioMessage() != nil {
+			postmap["mediaType"] = "audio"
+			postmap["mimeType"] = evt.Message.GetAudioMessage().GetMimetype()
+		} else if evt.Message.GetDocumentMessage() != nil {
+			postmap["mediaType"] = "document"
+			postmap["mimeType"] = evt.Message.GetDocumentMessage().GetMimetype()
+			if evt.Message.GetDocumentMessage().FileName != nil {
+				postmap["fileName"] = *evt.Message.GetDocumentMessage().FileName
+			}
+		} else if evt.Message.GetStickerMessage() != nil {
+			postmap["mediaType"] = "sticker"
+			postmap["mimeType"] = evt.Message.GetStickerMessage().GetMimetype()
+		}
+
 		// Add basic message info
 		postmap["from"] = evt.Info.Sender.String()
 		postmap["to"] = evt.Info.Chat.String()
@@ -1062,40 +1117,56 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Check if message is from a group and add group metadata
 		if evt.Info.IsGroup {
 			groupJID := evt.Info.Chat
-			groupInfo, err := mycli.WAClient.GetGroupInfo(context.Background(), groupJID)
-			if err != nil {
-				log.Warn().Err(err).Str("groupJID", groupJID.String()).Msg("Failed to get group info for webhook")
+			cacheKey := groupJID.String()
+			
+			// Try to get from cache first
+			var groupMetadata map[string]interface{}
+			if cached, found := groupInfoCache.Get(cacheKey); found {
+				groupMetadata = cached.(map[string]interface{})
+				log.Debug().Str("groupJID", groupJID.String()).Msg("Using cached group info")
 			} else {
-				log.Warn().Interface("groupJID", groupInfo.Participants).Msg("Got group info for webhook")
-				// Build participants array with detailed info
-				participants := make([]map[string]interface{}, 0, len(groupInfo.Participants))
-				for _, participant := range groupInfo.Participants {
-					participantData := map[string]interface{}{
-						"id":           participant.JID.String(),
-						"isAdmin":      participant.IsAdmin,
-						"isSuperAdmin": participant.IsSuperAdmin,
-						"phoneNumber":  participant.PhoneNumber,
+				// Not in cache, fetch from WhatsApp
+				groupInfo, err := mycli.WAClient.GetGroupInfo(context.Background(), groupJID)
+				if err != nil {
+					log.Warn().Err(err).Str("groupJID", groupJID.String()).Msg("Failed to get group info for webhook")
+				} else {
+					log.Debug().Str("groupJID", groupJID.String()).Msg("Fetched fresh group info from WhatsApp")
+					// Build participants array with detailed info
+					participants := make([]map[string]interface{}, 0, len(groupInfo.Participants))
+					for _, participant := range groupInfo.Participants {
+						participantData := map[string]interface{}{
+							"id":           participant.JID.String(),
+							"isAdmin":      participant.IsAdmin,
+							"isSuperAdmin": participant.IsSuperAdmin,
+							"phoneNumber":  participant.PhoneNumber,
+						}
+
+						// Add LID if available
+						if !participant.LID.IsEmpty() {
+							participantData["lid"] = participant.LID.String()
+						}
+
+						participants = append(participants, participantData)
 					}
 
-					// Add LID if available
-					if !participant.LID.IsEmpty() {
-						participantData["lid"] = participant.LID.String()
+					groupMetadata = map[string]interface{}{
+						"id":             groupInfo.JID.String(),
+						"subject":        groupInfo.Name,
+						"subjectOwner":   groupInfo.OwnerJID.String(),
+						"participants":   participants,
+						"size":           len(groupInfo.Participants),
+						"isAnnounce":     groupInfo.IsAnnounce,
+						"isLocked":       groupInfo.IsLocked,
+						"desc":           groupInfo.GroupTopic.Topic,
+						"addressingMode": groupInfo.AddressingMode,
 					}
-
-					participants = append(participants, participantData)
+					
+					// Cache the group metadata for 5 minutes
+					groupInfoCache.Set(cacheKey, groupMetadata, cache.DefaultExpiration)
 				}
-
-				groupMetadata := map[string]interface{}{
-					"id":             groupInfo.JID.String(),
-					"subject":        groupInfo.Name,
-					"subjectOwner":   groupInfo.OwnerJID.String(),
-					"participants":   participants,
-					"size":           len(groupInfo.Participants),
-					"isAnnounce":     groupInfo.IsAnnounce,
-					"isLocked":       groupInfo.IsLocked,
-					"desc":           groupInfo.GroupTopic.Topic,
-					"addressingMode": groupInfo.AddressingMode,
-				}
+			}
+			
+			if groupMetadata != nil {
 				postmap["groupMetadata"] = groupMetadata
 			}
 		}
