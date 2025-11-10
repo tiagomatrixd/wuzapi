@@ -738,12 +738,24 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	switch evt := rawEvt.(type) {
 	case *events.AppStateSyncComplete:
 		if len(mycli.WAClient.Store.PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
+			// Send available presence first to ensure proper sync
 			err := mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
 			if err != nil {
 				log.Warn().Err(err).Msg("Failed to send available presence")
 			} else {
-				log.Info().Msg("Marked self as available")
+				log.Info().Msg("Marked self as available temporarily")
 			}
+			
+			// After 3 seconds, set to unavailable to avoid being always online
+			go func() {
+				time.Sleep(3 * time.Second)
+				err := mycli.WAClient.SendPresence(context.Background(), types.PresenceUnavailable)
+				if err != nil {
+					log.Warn().Err(err).Msg("Failed to send unavailable presence")
+				} else {
+					log.Info().Msg("Automatically marked self as unavailable (invisible)")
+				}
+			}()
 		}
 	case *events.Connected, *events.PushNameSetting:
 		postmap["type"] = "Connected"
@@ -753,14 +765,25 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		if len(mycli.WAClient.Store.PushName) == 0 {
 			break
 		}
-		// Send presence available when connecting and when the pushname is changed.
-		// This makes sure that outgoing messages always have the right pushname.
+		// Send presence available when connecting to ensure proper sync
 		err := mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to send available presence")
 		} else {
-			log.Info().Msg("Marked self as available")
+			log.Info().Msg("Marked self as available temporarily")
 		}
+		
+		// After 3 seconds, automatically set to unavailable
+		go func() {
+			time.Sleep(3 * time.Second)
+			err := mycli.WAClient.SendPresence(context.Background(), types.PresenceUnavailable)
+			if err != nil {
+				log.Warn().Err(err).Msg("Failed to send unavailable presence")
+			} else {
+				log.Info().Msg("Automatically marked self as unavailable (invisible)")
+			}
+		}()
+		
 		sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
 		_, err = mycli.db.Exec(sqlStmt, mycli.userID)
 		if err != nil {
