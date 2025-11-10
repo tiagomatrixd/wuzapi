@@ -745,7 +745,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			} else {
 				log.Info().Msg("Marked self as available temporarily")
 			}
-			
+
 			// After 3 seconds, set to unavailable to avoid being always online
 			go func() {
 				time.Sleep(3 * time.Second)
@@ -772,7 +772,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		} else {
 			log.Info().Msg("Marked self as available temporarily")
 		}
-		
+
 		// After 3 seconds, automatically set to unavailable
 		go func() {
 			time.Sleep(3 * time.Second)
@@ -783,7 +783,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				log.Info().Msg("Automatically marked self as unavailable (invisible)")
 			}
 		}()
-		
+
 		sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
 		_, err = mycli.db.Exec(sqlStmt, mycli.userID)
 		if err != nil {
