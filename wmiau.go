@@ -861,20 +861,20 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Add session info
 		mycli.addSessionInfo(postmap)
 		log.Info().Str("reason", fmt.Sprintf("%+v", evt)).Msg("Disconnected from Whatsapp")
-		
+
 		// Attempt automatic reconnection if we have stored credentials
 		if mycli.WAClient.Store.ID != nil {
 			log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Attempting automatic reconnection after disconnect")
 			go func() {
 				// Wait a bit before reconnecting
 				time.Sleep(5 * time.Second)
-				
+
 				// Check if client still exists in manager
 				if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
 					log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
 					return
 				}
-				
+
 				err := mycli.WAClient.Connect()
 				if err != nil {
 					log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect")
@@ -903,20 +903,20 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Add session info
 		mycli.addSessionInfo(postmap)
 		log.Error().Str("reason", fmt.Sprintf("%+v", evt)).Msg("Failed to connect to Whatsapp")
-		
+
 		// Attempt automatic reconnection if we have stored credentials
 		if mycli.WAClient.Store.ID != nil {
 			log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Attempting automatic reconnection after connection failure")
 			go func() {
 				// Wait a bit before reconnecting
 				time.Sleep(10 * time.Second)
-				
+
 				// Check if client still exists in manager
 				if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
 					log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
 					return
 				}
-				
+
 				err := mycli.WAClient.Connect()
 				if err != nil {
 					log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect after connection failure")
