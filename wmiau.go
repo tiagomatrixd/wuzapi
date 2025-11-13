@@ -604,8 +604,10 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	}
 	clientManager.SetHTTPClient(userID, httpClient)
 
+	// Check if we have stored credentials (ID is not nil means we have a previous session)
 	if client.Store.ID == nil {
-		// No ID stored, new login
+		// No ID stored, new login - generate QR code
+		log.Info().Msg("No stored credentials found. Starting QR code login process")
 		qrChan, err := client.GetQRChannel(context.Background())
 		if err != nil {
 			// This error means that we're already logged in, so ignore it.
@@ -616,7 +618,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 		} else {
 			err = client.Connect() // Si no conectamos no se puede generar QR
 			if err != nil {
-				log.Error().Err(err).Msg("Failed to connect client")
+				log.Error().Err(err).Msg("Failed to connect client for QR generation")
 				return
 			}
 
@@ -654,7 +656,8 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 
 				} else if evt.Event == "timeout" {
 					// Clear QR code from DB on timeout
-					sqlStmt := `UPDATE users SET qrcode='' WHERE id=$1`
+					log.Warn().Msg("QR code timeout - no scan detected")
+					sqlStmt := `UPDATE users SET qrcode='', connected=0 WHERE id=$1`
 					_, err := s.db.Exec(sqlStmt, userID)
 					if err != nil {
 						log.Error().Err(err).Msg(sqlStmt)
@@ -664,11 +667,12 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 							userinfocache.Set(token, v, cache.NoExpiration)
 						}
 					}
-					log.Warn().Msg("QR timeout killing channel")
+					log.Warn().Msg("QR timeout - cleaning up and stopping client")
 					clientManager.DeleteWhatsmeowClient(userID)
 					clientManager.DeleteMyClient(userID)
 					clientManager.DeleteHTTPClient(userID)
 					killchannel[userID] <- true
+					return
 				} else if evt.Event == "success" {
 					log.Info().Msg("QR pairing ok!")
 					// Clear QR code after pairing
@@ -689,12 +693,21 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 		}
 
 	} else {
-		// Already logged in, just connect
-		log.Info().Msg("Already logged in, just connect")
+		// Already logged in, just connect with stored credentials
+		log.Info().Str("jid", client.Store.ID.String()).Msg("Stored credentials found. Attempting to reconnect with saved session")
 		err = client.Connect()
 		if err != nil {
-			panic(err)
+			log.Error().Err(err).Str("jid", client.Store.ID.String()).Msg("Failed to connect with stored credentials")
+			// Don't panic - just log and return so the client can be manually reconnected
+			// The session data is still intact and can be used later
+			sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
+			_, dbErr := s.db.Exec(sqlStmt, userID)
+			if dbErr != nil {
+				log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
+			}
+			return
 		}
+		log.Info().Str("jid", client.Store.ID.String()).Msg("Successfully reconnected with stored credentials")
 	}
 
 	// Keep connected client live until disconnected/killed
@@ -707,7 +720,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 			clientManager.DeleteMyClient(userID)
 			clientManager.DeleteHTTPClient(userID)
 			sqlStmt := `UPDATE users SET qrcode='', connected=0 WHERE id=$1`
-			_, err := s.db.Exec(sqlStmt, "", userID)
+			_, err := s.db.Exec(sqlStmt, userID)
 			if err != nil {
 				log.Error().Err(err).Msg(sqlStmt)
 			}
@@ -848,12 +861,84 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Add session info
 		mycli.addSessionInfo(postmap)
 		log.Info().Str("reason", fmt.Sprintf("%+v", evt)).Msg("Disconnected from Whatsapp")
+		
+		// Attempt automatic reconnection if we have stored credentials
+		if mycli.WAClient.Store.ID != nil {
+			log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Attempting automatic reconnection after disconnect")
+			go func() {
+				// Wait a bit before reconnecting
+				time.Sleep(5 * time.Second)
+				
+				// Check if client still exists in manager
+				if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
+					log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
+					return
+				}
+				
+				err := mycli.WAClient.Connect()
+				if err != nil {
+					log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect")
+					// Update DB to reflect disconnected state
+					sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
+					_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
+					if dbErr != nil {
+						log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
+					}
+				} else {
+					log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Successfully reconnected automatically")
+					// Update DB to reflect connected state
+					sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
+					_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
+					if dbErr != nil {
+						log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
+					}
+				}
+			}()
+		} else {
+			log.Warn().Msg("No stored credentials for automatic reconnection")
+		}
 	case *events.ConnectFailure:
 		postmap["type"] = "ConnectFailure"
 		dowebhook = 1
 		// Add session info
 		mycli.addSessionInfo(postmap)
 		log.Error().Str("reason", fmt.Sprintf("%+v", evt)).Msg("Failed to connect to Whatsapp")
+		
+		// Attempt automatic reconnection if we have stored credentials
+		if mycli.WAClient.Store.ID != nil {
+			log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Attempting automatic reconnection after connection failure")
+			go func() {
+				// Wait a bit before reconnecting
+				time.Sleep(10 * time.Second)
+				
+				// Check if client still exists in manager
+				if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
+					log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
+					return
+				}
+				
+				err := mycli.WAClient.Connect()
+				if err != nil {
+					log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect after connection failure")
+					// Update DB to reflect disconnected state
+					sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
+					_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
+					if dbErr != nil {
+						log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
+					}
+				} else {
+					log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Successfully reconnected automatically after connection failure")
+					// Update DB to reflect connected state
+					sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
+					_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
+					if dbErr != nil {
+						log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
+					}
+				}
+			}()
+		} else {
+			log.Warn().Msg("No stored credentials for automatic reconnection")
+		}
 	case *events.GroupInfo:
 		postmap["type"] = "GroupInfo"
 		dowebhook = 1
