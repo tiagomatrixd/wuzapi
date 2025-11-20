@@ -695,7 +695,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	} else {
 		// Already logged in, just connect with stored credentials
 		log.Info().Str("jid", client.Store.ID.String()).Msg("Stored credentials found. Attempting to reconnect with saved session")
-		
+
 		// Retry logic for initial connection
 		for i := 0; i < 10; i++ {
 			err = client.Connect()
