@@ -695,9 +695,19 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	} else {
 		// Already logged in, just connect with stored credentials
 		log.Info().Str("jid", client.Store.ID.String()).Msg("Stored credentials found. Attempting to reconnect with saved session")
-		err = client.Connect()
+		
+		// Retry logic for initial connection
+		for i := 0; i < 10; i++ {
+			err = client.Connect()
+			if err == nil {
+				break
+			}
+			log.Warn().Err(err).Int("attempt", i+1).Msg("Failed to connect, retrying...")
+			time.Sleep(time.Duration(i*2+2) * time.Second)
+		}
+
 		if err != nil {
-			log.Error().Err(err).Str("jid", client.Store.ID.String()).Msg("Failed to connect with stored credentials")
+			log.Error().Err(err).Str("jid", client.Store.ID.String()).Msg("Failed to connect with stored credentials after retries")
 			// Don't panic - just log and return so the client can be manually reconnected
 			// The session data is still intact and can be used later
 			sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
@@ -866,32 +876,50 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		if mycli.WAClient.Store.ID != nil {
 			log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Attempting automatic reconnection after disconnect")
 			go func() {
-				// Wait a bit before reconnecting
-				time.Sleep(5 * time.Second)
+				// Retry loop with backoff
+				for i := 0; i < 15; i++ {
+					// Wait a bit before reconnecting (exponential backoff: 2, 4, 8, 16...)
+					sleepTime := time.Duration(2<<i) * time.Second
+					if sleepTime > 60*time.Second {
+						sleepTime = 60 * time.Second
+					}
+					log.Info().Int("attempt", i+1).Dur("wait", sleepTime).Msg("Waiting before reconnection attempt")
+					time.Sleep(sleepTime)
 
-				// Check if client still exists in manager
-				if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
-					log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
-					return
+					// Check if client still exists in manager
+					if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
+						log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
+						return
+					}
+
+					// Check if already connected
+					if mycli.WAClient.IsConnected() {
+						log.Info().Msg("Client already connected, stopping reconnection loop")
+						return
+					}
+
+					log.Info().Int("attempt", i+1).Msg("Reconnecting...")
+					err := mycli.WAClient.Connect()
+					if err != nil {
+						log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect")
+					} else {
+						log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Successfully reconnected automatically")
+						// Update DB to reflect connected state
+						sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
+						_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
+						if dbErr != nil {
+							log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
+						}
+						return // Success
+					}
 				}
 
-				err := mycli.WAClient.Connect()
-				if err != nil {
-					log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect")
-					// Update DB to reflect disconnected state
-					sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
-					_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
-					if dbErr != nil {
-						log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
-					}
-				} else {
-					log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Successfully reconnected automatically")
-					// Update DB to reflect connected state
-					sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
-					_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
-					if dbErr != nil {
-						log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
-					}
+				// If we exhausted retries
+				log.Error().Msg("Exhausted reconnection attempts")
+				sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
+				_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
+				if dbErr != nil {
+					log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
 				}
 			}()
 		} else {
@@ -908,32 +936,50 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		if mycli.WAClient.Store.ID != nil {
 			log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Attempting automatic reconnection after connection failure")
 			go func() {
-				// Wait a bit before reconnecting
-				time.Sleep(10 * time.Second)
+				// Retry loop with backoff
+				for i := 0; i < 15; i++ {
+					// Wait a bit before reconnecting (exponential backoff: 2, 4, 8, 16...)
+					sleepTime := time.Duration(2<<i) * time.Second
+					if sleepTime > 60*time.Second {
+						sleepTime = 60 * time.Second
+					}
+					log.Info().Int("attempt", i+1).Dur("wait", sleepTime).Msg("Waiting before reconnection attempt (ConnectFailure)")
+					time.Sleep(sleepTime)
 
-				// Check if client still exists in manager
-				if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
-					log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
-					return
+					// Check if client still exists in manager
+					if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
+						log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
+						return
+					}
+
+					// Check if already connected
+					if mycli.WAClient.IsConnected() {
+						log.Info().Msg("Client already connected, stopping reconnection loop")
+						return
+					}
+
+					log.Info().Int("attempt", i+1).Msg("Reconnecting...")
+					err := mycli.WAClient.Connect()
+					if err != nil {
+						log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect after connection failure")
+					} else {
+						log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Successfully reconnected automatically after connection failure")
+						// Update DB to reflect connected state
+						sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
+						_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
+						if dbErr != nil {
+							log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
+						}
+						return // Success
+					}
 				}
 
-				err := mycli.WAClient.Connect()
-				if err != nil {
-					log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect after connection failure")
-					// Update DB to reflect disconnected state
-					sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
-					_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
-					if dbErr != nil {
-						log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
-					}
-				} else {
-					log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Successfully reconnected automatically after connection failure")
-					// Update DB to reflect connected state
-					sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
-					_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
-					if dbErr != nil {
-						log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
-					}
+				// If we exhausted retries
+				log.Error().Msg("Exhausted reconnection attempts after connection failure")
+				sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
+				_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
+				if dbErr != nil {
+					log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
 				}
 			}()
 		} else {
