@@ -671,7 +671,10 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 					clientManager.DeleteWhatsmeowClient(userID)
 					clientManager.DeleteMyClient(userID)
 					clientManager.DeleteHTTPClient(userID)
-					killchannel[userID] <- true
+					if ch, ok := killchannel[userID]; ok {
+						ch <- true
+						delete(killchannel, userID)
+					}
 					return
 				} else if evt.Event == "success" {
 					log.Info().Msg("QR pairing ok!")
@@ -721,9 +724,10 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	}
 
 	// Keep connected client live until disconnected/killed
+	kchan := killchannel[userID]
 	for {
 		select {
-		case <-killchannel[userID]:
+		case <-kchan:
 			log.Info().Str("userid", userID).Msg("Received kill signal")
 			client.Disconnect()
 			clientManager.DeleteWhatsmeowClient(userID)

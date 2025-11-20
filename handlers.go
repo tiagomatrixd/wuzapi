@@ -59,12 +59,6 @@ func (s *server) authalice(next http.Handler) http.Handler {
 
 		var ctx context.Context
 		txtid := ""
-		name := ""
-		webhook := ""
-		jid := ""
-		events := ""
-		proxy_url := ""
-		qrcode := ""
 
 		// Get token from headers or uri parameters
 		token := r.Header.Get("token")
@@ -76,33 +70,40 @@ func (s *server) authalice(next http.Handler) http.Handler {
 		if !found {
 			log.Info().Msg("Looking for user information in DB")
 			// Checks DB from matching user and store user values in context
-			rows, err := s.db.Query("SELECT id,name,webhook,jid,events,proxy_url,qrcode FROM users WHERE token=$1 LIMIT 1", token)
+			var user struct {
+				Id       string         `db:"id"`
+				Name     sql.NullString `db:"name"`
+				Webhook  sql.NullString `db:"webhook"`
+				Jid      sql.NullString `db:"jid"`
+				Events   sql.NullString `db:"events"`
+				ProxyUrl sql.NullString `db:"proxy_url"`
+				Qrcode   sql.NullString `db:"qrcode"`
+			}
+			err := s.db.Get(&user, "SELECT id,name,webhook,jid,events,proxy_url,qrcode FROM users WHERE token=$1 LIMIT 1", token)
 			if err != nil {
+				if err == sql.ErrNoRows {
+					s.Respond(w, r, http.StatusUnauthorized, errors.New("unauthorized"))
+					return
+				}
 				s.Respond(w, r, http.StatusInternalServerError, err)
 				return
 			}
-			defer rows.Close()
-			for rows.Next() {
-				err = rows.Scan(&txtid, &name, &webhook, &jid, &events, &proxy_url, &qrcode)
-				if err != nil {
-					s.Respond(w, r, http.StatusInternalServerError, err)
-					return
-				}
-				v := Values{map[string]string{
-					"Id":      txtid,
-					"Name":    name,
-					"Jid":     jid,
-					"Webhook": webhook,
-					"Token":   token,
-					"Proxy":   proxy_url,
-					"Events":  events,
-					"Qrcode":  qrcode,
-				}}
 
-				userinfocache.Set(token, v, cache.NoExpiration)
-				log.Info().Str("name", name).Msg("User info name from DB")
-				ctx = context.WithValue(r.Context(), "userinfo", v)
-			}
+			txtid = user.Id
+			v := Values{map[string]string{
+				"Id":      user.Id,
+				"Name":    user.Name.String,
+				"Jid":     user.Jid.String,
+				"Webhook": user.Webhook.String,
+				"Token":   token,
+				"Proxy":   user.ProxyUrl.String,
+				"Events":  user.Events.String,
+				"Qrcode":  user.Qrcode.String,
+			}}
+
+			userinfocache.Set(token, v, cache.DefaultExpiration)
+			log.Info().Str("name", user.Name.String).Msg("User info name from DB")
+			ctx = context.WithValue(r.Context(), "userinfo", v)
 		} else {
 			ctx = context.WithValue(r.Context(), "userinfo", myuserinfo)
 			log.Info().Str("name", myuserinfo.(Values).Get("name")).Msg("User info name from Cache")
@@ -233,7 +234,10 @@ func (s *server) Disconnect() http.HandlerFunc {
 			responseJson, err := json.Marshal(response)
 
 			clientManager.DeleteWhatsmeowClient(txtid) // mameluco
-			killchannel[txtid] <- true
+			if ch, ok := killchannel[txtid]; ok {
+				ch <- true
+				delete(killchannel, txtid)
+			}
 
 			if err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, err)
@@ -520,32 +524,34 @@ func (s *server) Logout() http.HandlerFunc {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		jid := r.Context().Value("userinfo").(Values).Get("Jid")
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
+		}
+
+		if client.IsLoggedIn() && client.IsConnected() {
+			err := client.Logout(context.Background())
+			if err != nil {
+				log.Error().Str("jid", jid).Err(err).Msg("Could not perform logout")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("could not perform logout"))
+				return
+			}
+			log.Info().Str("jid", jid).Msg("Logged out")
+			clientManager.DeleteWhatsmeowClient(txtid)
+			if ch, ok := killchannel[txtid]; ok {
+				ch <- true
+				delete(killchannel, txtid)
+			}
 		} else {
-			if clientManager.GetWhatsmeowClient(txtid).IsLoggedIn() == true &&
-				clientManager.GetWhatsmeowClient(txtid).IsConnected() == true {
-				err := clientManager.GetWhatsmeowClient(txtid).Logout(context.Background())
-				if err != nil {
-					log.Error().Str("jid", jid).Msg("Could not perform logout")
-					s.Respond(w, r, http.StatusInternalServerError, errors.New("could not perform logout"))
-					return
-				} else {
-					log.Info().Str("jid", jid).Msg("Logged out")
-					clientManager.DeleteWhatsmeowClient(txtid)
-					killchannel[txtid] <- true
-				}
+			if client.IsConnected() {
+				log.Warn().Str("jid", jid).Msg("Ignoring logout as it was not logged in")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("could not logout as it was not logged in"))
+				return
 			} else {
-				if clientManager.GetWhatsmeowClient(txtid).IsConnected() == true {
-					log.Warn().Str("jid", jid).Msg("Ignoring logout as it was not logged in")
-					s.Respond(w, r, http.StatusInternalServerError, errors.New("could not logout as it was not logged in"))
-					return
-				} else {
-					log.Warn().Str("jid", jid).Msg("Ignoring logout as it was not connected")
-					s.Respond(w, r, http.StatusInternalServerError, errors.New("could not disconnect as it was not connected"))
-					return
-				}
+				log.Warn().Str("jid", jid).Msg("Ignoring logout as it was not connected")
+				s.Respond(w, r, http.StatusInternalServerError, errors.New("could not disconnect as it was not connected"))
+				return
 			}
 		}
 
@@ -556,7 +562,6 @@ func (s *server) Logout() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
@@ -571,7 +576,8 @@ func (s *server) PairPhone() http.HandlerFunc {
 
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
 		}
@@ -589,16 +595,16 @@ func (s *server) PairPhone() http.HandlerFunc {
 			return
 		}
 
-		isLoggedIn := clientManager.GetWhatsmeowClient(txtid).IsLoggedIn()
+		isLoggedIn := client.IsLoggedIn()
 		if isLoggedIn {
-			log.Error().Msg(fmt.Sprintf("%s", "already paired"))
+			log.Error().Msg("already paired")
 			s.Respond(w, r, http.StatusBadRequest, errors.New("already paired"))
 			return
 		}
 
-		linkingCode, err := clientManager.GetWhatsmeowClient(txtid).PairPhone(context.Background(), t.Phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+		linkingCode, err := client.PairPhone(context.Background(), t.Phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 		if err != nil {
-			log.Error().Msg(fmt.Sprintf("%s", err))
+			log.Error().Err(err).Msg("PairPhone failed")
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
@@ -610,7 +616,6 @@ func (s *server) PairPhone() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
@@ -620,10 +625,11 @@ func (s *server) GetStatus() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		userInfo := r.Context().Value("userinfo").(Values)
+		txtid := userInfo.Get("Id")
 
 		// Log all userinfo values
 		log.Info().
-			Str("Id", userInfo.Get("Id")).
+			Str("Id", txtid).
 			Str("Jid", userInfo.Get("Jid")).
 			Str("Name", userInfo.Get("Name")).
 			Str("Webhook", userInfo.Get("Webhook")).
@@ -632,23 +638,22 @@ func (s *server) GetStatus() http.HandlerFunc {
 			Str("Proxy", userInfo.Get("Proxy")).
 			Msg("User info values")
 
-		log.Info().Str("Name", userInfo.Get("Name")).Msg("User name")
+		isConnected := false
+		isLoggedIn := false
 
-		txtid := userInfo.Get("Id")
-
-		/*
-			if clientManager.GetWhatsmeowClient(txtid) == nil {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
-				return
-			}
-		*/
-
-		isConnected := clientManager.GetWhatsmeowClient(txtid).IsConnected()
-		isLoggedIn := clientManager.GetWhatsmeowClient(txtid).IsLoggedIn()
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client != nil {
+			isConnected = client.IsConnected()
+			isLoggedIn = client.IsLoggedIn()
+		}
 
 		// Get proxy_config
 		var proxyURL string
-		s.db.QueryRow("SELECT proxy_url FROM users WHERE id = $1", txtid).Scan(&proxyURL)
+		err := s.db.QueryRow("SELECT proxy_url FROM users WHERE id = $1", txtid).Scan(&proxyURL)
+		if err != nil && err != sql.ErrNoRows {
+			log.Error().Err(err).Msg("Failed to get proxy config")
+		}
+
 		proxyConfig := map[string]interface{}{
 			"enabled":   proxyURL != "",
 			"proxy_url": proxyURL,
@@ -658,7 +663,11 @@ func (s *server) GetStatus() http.HandlerFunc {
 		var s3Endpoint, s3Region, s3Bucket, s3AccessKey, s3PublicURL, s3MediaDelivery string
 		var s3PathStyle bool
 		var s3RetentionDays int
-		s.db.QueryRow(`SELECT s3_enabled, s3_endpoint, s3_region, s3_bucket, s3_access_key, s3_path_style, s3_public_url, media_delivery, s3_retention_days FROM users WHERE id = $1`, txtid).Scan(&s3Enabled, &s3Endpoint, &s3Region, &s3Bucket, &s3AccessKey, &s3PathStyle, &s3PublicURL, &s3MediaDelivery, &s3RetentionDays)
+		err = s.db.QueryRow(`SELECT s3_enabled, s3_endpoint, s3_region, s3_bucket, s3_access_key, s3_path_style, s3_public_url, media_delivery, s3_retention_days FROM users WHERE id = $1`, txtid).Scan(&s3Enabled, &s3Endpoint, &s3Region, &s3Bucket, &s3AccessKey, &s3PathStyle, &s3PublicURL, &s3MediaDelivery, &s3RetentionDays)
+		if err != nil && err != sql.ErrNoRows {
+			log.Error().Err(err).Msg("Failed to get s3 config")
+		}
+
 		s3Config := map[string]interface{}{
 			"enabled":        s3Enabled,
 			"endpoint":       s3Endpoint,
@@ -690,7 +699,6 @@ func (s *server) GetStatus() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
@@ -873,7 +881,8 @@ func (s *server) SendAudio() http.HandlerFunc {
 		msgid := ""
 		var resp whatsmeow.SendResponse
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
 		}
@@ -898,13 +907,13 @@ func (s *server) SendAudio() http.HandlerFunc {
 
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
-			log.Error().Msg(fmt.Sprintf("%s", err))
+			log.Error().Err(err).Msg("Validation failed")
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
 
 		if t.Id == "" {
-			msgid = clientManager.GetWhatsmeowClient(txtid).GenerateMessageID()
+			msgid = client.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
@@ -919,9 +928,9 @@ func (s *server) SendAudio() http.HandlerFunc {
 				return
 			} else {
 				filedata = dataURL.Data
-				uploaded, err = clientManager.GetWhatsmeowClient(txtid).Upload(context.Background(), filedata, whatsmeow.MediaAudio)
+				uploaded, err = client.Upload(context.Background(), filedata, whatsmeow.MediaAudio)
 				if err != nil {
-					s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("failed to upload file: %v", err)))
+					s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
 					return
 				}
 			}
@@ -976,9 +985,9 @@ func (s *server) SendAudio() http.HandlerFunc {
 			msg.AudioMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
 
-		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
+		resp, err = client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
+			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("error sending message: %w", err))
 			return
 		}
 
@@ -990,7 +999,6 @@ func (s *server) SendAudio() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
@@ -1012,7 +1020,8 @@ func (s *server) SendImage() http.HandlerFunc {
 		msgid := ""
 		var resp whatsmeow.SendResponse
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
 		}
@@ -1037,13 +1046,13 @@ func (s *server) SendImage() http.HandlerFunc {
 
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
-			log.Error().Msg(fmt.Sprintf("%s", err))
+			log.Error().Err(err).Msg("Validation failed")
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
 
 		if t.Id == "" {
-			msgid = clientManager.GetWhatsmeowClient(txtid).GenerateMessageID()
+			msgid = client.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
@@ -1052,16 +1061,16 @@ func (s *server) SendImage() http.HandlerFunc {
 		var filedata []byte
 		var thumbnailBytes []byte
 
-		if t.Image[0:10] == "data:image" {
+		if strings.HasPrefix(t.Image, "data:image") {
 			var dataURL, err = dataurl.DecodeString(t.Image)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode base64 encoded data from payload"))
 				return
 			} else {
 				filedata = dataURL.Data
-				uploaded, err = clientManager.GetWhatsmeowClient(txtid).Upload(context.Background(), filedata, whatsmeow.MediaImage)
+				uploaded, err = client.Upload(context.Background(), filedata, whatsmeow.MediaImage)
 				if err != nil {
-					s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("failed to upload file: %v", err)))
+					s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
 					return
 				}
 			}
@@ -1070,7 +1079,7 @@ func (s *server) SendImage() http.HandlerFunc {
 			reader := bytes.NewReader(filedata)
 			img, _, err := image.Decode(reader)
 			if err != nil {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("could not decode image for thumbnail preparation: %v", err)))
+				s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("could not decode image for thumbnail preparation: %w", err))
 				return
 			}
 
@@ -1079,25 +1088,27 @@ func (s *server) SendImage() http.HandlerFunc {
 
 			tmpFile, err := os.CreateTemp("", "resized-*.jpg")
 			if err != nil {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Could not create temp file for thumbnail: %v", err)))
+				s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("could not create temp file for thumbnail: %w", err))
 				return
 			}
 			defer tmpFile.Close()
 
 			// write new image to file
 			if err := jpeg.Encode(tmpFile, m, nil); err != nil {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to encode jpeg: %v", err)))
+				s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to encode jpeg: %w", err))
 				return
 			}
 
 			thumbnailBytes, err = os.ReadFile(tmpFile.Name())
 			if err != nil {
-				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to read %s: %v", tmpFile.Name(), err)))
+				s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to read %s: %w", tmpFile.Name(), err))
 				return
 			}
+			// Clean up temp file
+			os.Remove(tmpFile.Name())
 
 		} else {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Image data should start with \"data:image/png;base64,\""))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("image data should start with \"data:image/\""))
 			return
 		}
 
@@ -1135,9 +1146,9 @@ func (s *server) SendImage() http.HandlerFunc {
 			msg.ImageMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
 
-		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
+		resp, err = client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
+			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("error sending message: %w", err))
 			return
 		}
 
@@ -1149,7 +1160,6 @@ func (s *server) SendImage() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
@@ -1171,7 +1181,8 @@ func (s *server) SendSticker() http.HandlerFunc {
 		msgid := ""
 		var resp whatsmeow.SendResponse
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
 		}
@@ -1196,13 +1207,13 @@ func (s *server) SendSticker() http.HandlerFunc {
 
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
-			log.Error().Msg(fmt.Sprintf("%s", err))
+			log.Error().Err(err).Msg("Validation failed")
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
 
 		if t.Id == "" {
-			msgid = clientManager.GetWhatsmeowClient(txtid).GenerateMessageID()
+			msgid = client.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
@@ -1210,21 +1221,21 @@ func (s *server) SendSticker() http.HandlerFunc {
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
 
-		if t.Sticker[0:4] == "data" {
+		if strings.HasPrefix(t.Sticker, "data") {
 			var dataURL, err = dataurl.DecodeString(t.Sticker)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode base64 encoded data from payload"))
 				return
 			} else {
 				filedata = dataURL.Data
-				uploaded, err = clientManager.GetWhatsmeowClient(txtid).Upload(context.Background(), filedata, whatsmeow.MediaImage)
+				uploaded, err = client.Upload(context.Background(), filedata, whatsmeow.MediaImage)
 				if err != nil {
-					s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Failed to upload file: %v", err)))
+					s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
 					return
 				}
 			}
 		} else {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("Data should start with \"data:mime/type;base64,\""))
+			s.Respond(w, r, http.StatusBadRequest, errors.New("data should start with \"data:mime/type;base64,\""))
 			return
 		}
 
@@ -1260,9 +1271,9 @@ func (s *server) SendSticker() http.HandlerFunc {
 			msg.StickerMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
 
-		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
+		resp, err = client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("Error sending message: %v", err)))
+			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("error sending message: %w", err))
 			return
 		}
 
@@ -1274,7 +1285,6 @@ func (s *server) SendSticker() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
@@ -1297,7 +1307,8 @@ func (s *server) SendVideo() http.HandlerFunc {
 		msgid := ""
 		var resp whatsmeow.SendResponse
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
 		}
@@ -1322,13 +1333,13 @@ func (s *server) SendVideo() http.HandlerFunc {
 
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
-			log.Error().Msg(fmt.Sprintf("%s", err))
+			log.Error().Err(err).Msg("Validation failed")
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
 
 		if t.Id == "" {
-			msgid = clientManager.GetWhatsmeowClient(txtid).GenerateMessageID()
+			msgid = client.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
@@ -1336,16 +1347,16 @@ func (s *server) SendVideo() http.HandlerFunc {
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
 
-		if t.Video[0:4] == "data" {
+		if strings.HasPrefix(t.Video, "data") {
 			var dataURL, err = dataurl.DecodeString(t.Video)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode base64 encoded data from payload"))
 				return
 			} else {
 				filedata = dataURL.Data
-				uploaded, err = clientManager.GetWhatsmeowClient(txtid).Upload(context.Background(), filedata, whatsmeow.MediaVideo)
+				uploaded, err = client.Upload(context.Background(), filedata, whatsmeow.MediaVideo)
 				if err != nil {
-					s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("failed to upload file: %v", err)))
+					s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
 					return
 				}
 			}
@@ -1387,9 +1398,9 @@ func (s *server) SendVideo() http.HandlerFunc {
 			msg.VideoMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
 
-		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
+		resp, err = client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error sending message: %v", err)))
+			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("error sending message: %w", err))
 			return
 		}
 
@@ -1401,7 +1412,6 @@ func (s *server) SendVideo() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
@@ -1420,7 +1430,8 @@ func (s *server) SendContact() http.HandlerFunc {
 
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
 		}
@@ -1450,13 +1461,13 @@ func (s *server) SendContact() http.HandlerFunc {
 
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
-			log.Error().Msg(fmt.Sprintf("%s", err))
+			log.Error().Err(err).Msg("Validation failed")
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
 
 		if t.Id == "" {
-			msgid = clientManager.GetWhatsmeowClient(txtid).GenerateMessageID()
+			msgid = client.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
@@ -1482,9 +1493,9 @@ func (s *server) SendContact() http.HandlerFunc {
 			msg.ContactMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
 
-		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
+		resp, err = client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error sending message: %v", err)))
+			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("error sending message: %w", err))
 			return
 		}
 
@@ -1496,7 +1507,6 @@ func (s *server) SendContact() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
@@ -1516,7 +1526,8 @@ func (s *server) SendLocation() http.HandlerFunc {
 
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
+		client := clientManager.GetWhatsmeowClient(txtid)
+		if client == nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
 			return
 		}
@@ -1546,13 +1557,13 @@ func (s *server) SendLocation() http.HandlerFunc {
 
 		recipient, err := validateMessageFields(t.Phone, t.ContextInfo.StanzaID, t.ContextInfo.Participant)
 		if err != nil {
-			log.Error().Msg(fmt.Sprintf("%s", err))
+			log.Error().Err(err).Msg("Validation failed")
 			s.Respond(w, r, http.StatusBadRequest, err)
 			return
 		}
 
 		if t.Id == "" {
-			msgid = clientManager.GetWhatsmeowClient(txtid).GenerateMessageID()
+			msgid = client.GenerateMessageID()
 		} else {
 			msgid = t.Id
 		}
@@ -1579,9 +1590,9 @@ func (s *server) SendLocation() http.HandlerFunc {
 			msg.LocationMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
 		}
 
-		resp, err = clientManager.GetWhatsmeowClient(txtid).SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
+		resp, err = client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})
 		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("error sending message: %v", err)))
+			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("error sending message: %w", err))
 			return
 		}
 
@@ -1593,7 +1604,6 @@ func (s *server) SendLocation() http.HandlerFunc {
 		} else {
 			s.Respond(w, r, http.StatusOK, string(responseJson))
 		}
-		return
 	}
 }
 
