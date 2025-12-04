@@ -34,18 +34,19 @@ type server struct {
 
 // Replace the global variables
 var (
-	address       = flag.String("address", "0.0.0.0", "Bind IP Address")
-	port          = flag.String("port", "8080", "Listen Port")
-	waDebug       = flag.String("wadebug", "", "Enable whatsmeow debug (INFO or DEBUG)")
-	logType       = flag.String("logtype", "console", "Type of log output (console or json)")
-	skipMedia     = flag.Bool("skipmedia", false, "Do not attempt to download media in messages")
-	osName        = flag.String("osname", "Mac OS 10", "Connection OSName in Whatsapp")
-	colorOutput   = flag.Bool("color", false, "Enable colored output for console logs")
-	sslcert       = flag.String("sslcertificate", "", "SSL Certificate File")
-	sslprivkey    = flag.String("sslprivatekey", "", "SSL Certificate Private Key File")
-	adminToken    = flag.String("admintoken", "", "Security Token to authorize admin actions (list/create/remove users)")
-	globalWebhook = flag.String("globalwebhook", "", "Global webhook URL to receive all events from all users")
-	versionFlag   = flag.Bool("version", false, "Display version information and exit")
+	address        = flag.String("address", "0.0.0.0", "Bind IP Address")
+	port           = flag.String("port", "8080", "Listen Port")
+	waDebug        = flag.String("wadebug", "", "Enable whatsmeow debug (INFO or DEBUG)")
+	logType        = flag.String("logtype", "console", "Type of log output (console or json)")
+	skipMedia      = flag.Bool("skipmedia", false, "Do not attempt to download media in messages")
+	osName         = flag.String("osname", "Mac OS 10", "Connection OSName in Whatsapp")
+	colorOutput    = flag.Bool("color", false, "Enable colored output for console logs")
+	sslcert        = flag.String("sslcertificate", "", "SSL Certificate File")
+	sslprivkey     = flag.String("sslprivatekey", "", "SSL Certificate Private Key File")
+	adminToken     = flag.String("admintoken", "", "Security Token to authorize admin actions (list/create/remove users)")
+	globalWebhook  = flag.String("globalwebhook", "", "Global webhook URL to receive all events from all users")
+	versionFlag    = flag.Bool("version", false, "Display version information and exit")
+	wakeupInterval = flag.Int("wakeupinterval", 12, "Interval in hours between session wake-up cycles to prevent WhatsApp disconnection (0 to disable)")
 
 	container        *sqlstore.Container
 	clientManager    = NewClientManager()
@@ -215,6 +216,13 @@ func main() {
 	s.routes()
 
 	s.connectOnStartup()
+
+	// Start the session wake-up scheduler if enabled
+	if *wakeupInterval > 0 {
+		go s.startWakeupScheduler()
+	} else {
+		log.Info().Msg("Session wake-up scheduler is disabled")
+	}
 
 	srv := &http.Server{
 		Addr:              *address + ":" + *port,

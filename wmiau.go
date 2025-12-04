@@ -386,6 +386,97 @@ func checkIfSubscribedToEvent(subscribedEvents []string, eventType string, userI
 	return true
 }
 
+// startWakeupScheduler runs a periodic task to wake up all connected sessions
+// This prevents WhatsApp from disconnecting sessions after ~15 days of inactivity
+func (s *server) startWakeupScheduler() {
+	interval := time.Duration(*wakeupInterval) * time.Hour
+	log.Info().Dur("interval", interval).Msg("Starting session wake-up scheduler")
+
+	// Run immediately on startup after a small delay to let sessions connect
+	time.Sleep(30 * time.Second)
+	s.wakeupAllSessions()
+
+	// Then run periodically
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.wakeupAllSessions()
+	}
+}
+
+// wakeupAllSessions sends presence to all connected sessions to keep them alive
+func (s *server) wakeupAllSessions() {
+	log.Info().Msg("Starting session wake-up cycle")
+
+	// Get all connected users from database
+	rows, err := s.db.Queryx("SELECT id, token, jid FROM users WHERE connected=1")
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to query connected users for wake-up")
+		return
+	}
+	defer rows.Close()
+
+	wokenUp := 0
+	failed := 0
+
+	for rows.Next() {
+		var userID, token, jid string
+		if err := rows.Scan(&userID, &token, &jid); err != nil {
+			log.Error().Err(err).Msg("Failed to scan user row for wake-up")
+			continue
+		}
+
+		// Get the client from manager
+		client := clientManager.GetWhatsmeowClient(userID)
+		if client == nil {
+			log.Warn().Str("userID", userID).Str("jid", jid).Msg("No client found for wake-up")
+			failed++
+			continue
+		}
+
+		// Check if client is actually connected
+		if !client.IsConnected() {
+			log.Warn().Str("userID", userID).Str("jid", jid).Msg("Client not connected, skipping wake-up")
+			failed++
+			continue
+		}
+
+		// Send presence available
+		err := client.SendPresence(context.Background(), types.PresenceAvailable)
+		if err != nil {
+			log.Error().Err(err).Str("userID", userID).Str("jid", jid).Msg("Failed to send available presence during wake-up")
+			failed++
+			continue
+		}
+
+		log.Debug().Str("userID", userID).Str("jid", jid).Msg("Sent available presence for wake-up")
+
+		// Wait a short time before going unavailable (to let the presence sync)
+		time.Sleep(3 * time.Second)
+
+		// Send presence unavailable to go back offline
+		err = client.SendPresence(context.Background(), types.PresenceUnavailable)
+		if err != nil {
+			log.Warn().Err(err).Str("userID", userID).Str("jid", jid).Msg("Failed to send unavailable presence during wake-up")
+			// Don't count as failed since the main purpose (wake-up) was achieved
+		} else {
+			log.Debug().Str("userID", userID).Str("jid", jid).Msg("Sent unavailable presence after wake-up")
+		}
+
+		wokenUp++
+
+		// Small delay between sessions to avoid rate limiting
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("Error iterating user rows for wake-up")
+	}
+
+	log.Info().Int("wokenUp", wokenUp).Int("failed", failed).Msg("Completed session wake-up cycle")
+}
+
 // Connects to Whatsapp Websocket on server startup if last state was connected
 func (s *server) connectOnStartup() {
 	rows, err := s.db.Queryx("SELECT id,name,token,jid,webhook,events,proxy_url,CASE WHEN s3_enabled THEN 'true' ELSE 'false' END AS s3_enabled,media_delivery FROM users WHERE connected=1")
