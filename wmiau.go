@@ -847,18 +847,32 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	case *events.AppState:
 		log.Info().Str("index", fmt.Sprintf("%+v", evt.Index)).Str("actionValue", fmt.Sprintf("%+v", evt.SyncActionValue)).Msg("App state event received")
 	case *events.LoggedOut:
-		postmap["type"] = "Logged Out"
-		dowebhook = 1
+		postmap["type"] = "LoggedOut"
+		postmap["reason"] = evt.Reason.String()
 		// Add session info (should be available even when logging out)
 		mycli.addSessionInfo(postmap)
 		log.Info().Str("reason", evt.Reason.String()).Msg("Logged out")
-		killchannel[mycli.userID] <- true
+		
+		// Send webhook BEFORE killing the client to ensure delivery
+		sendEventWithWebHook(mycli, postmap, "")
+		
+		// Update DB
 		sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
 		_, err := mycli.db.Exec(sqlStmt, mycli.userID)
 		if err != nil {
 			log.Error().Err(err).Msg(sqlStmt)
-			return
 		}
+		
+		// Send kill signal after webhook is sent
+		if ch, ok := killchannel[mycli.userID]; ok {
+			select {
+			case ch <- true:
+				log.Info().Str("userID", mycli.userID).Msg("Kill signal sent after LoggedOut")
+			default:
+				log.Warn().Str("userID", mycli.userID).Msg("Kill channel full or closed")
+			}
+		}
+		return // Don't process webhook again at the end
 	case *events.CallOffer:
 		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call offer")
 	case *events.CallAccept:
