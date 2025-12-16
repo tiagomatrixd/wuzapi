@@ -724,6 +724,7 @@ func (s *server) SendDocument() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, fmt.Errorf("could not parse multipart form: %w", err))
 			return
 		}
+		defer r.MultipartForm.RemoveAll()
 
 		// Get and validate required fields
 		phone := r.FormValue("Phone")
@@ -1092,6 +1093,7 @@ func (s *server) SendImage() http.HandlerFunc {
 				return
 			}
 			defer tmpFile.Close()
+			defer os.Remove(tmpFile.Name())
 
 			// write new image to file
 			if err := jpeg.Encode(tmpFile, m, nil); err != nil {
