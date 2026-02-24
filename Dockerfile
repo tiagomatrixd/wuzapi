@@ -31,7 +31,7 @@ COPY . .
 
 RUN go build -o wuzapi
 
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
