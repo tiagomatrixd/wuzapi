@@ -1,4 +1,4 @@
-FROM golang:1.25.0-bullseye AS builder
+FROM golang:1.25-rc-bullseye AS builder
 
 # Configurar proxy do Go para evitar problemas de rede
 ENV GOPROXY=https://proxy.golang.org,direct
