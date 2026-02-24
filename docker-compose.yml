@@ -24,6 +24,7 @@ services:
 
   db:
     image: postgres:16
+    command: postgres -c max_connections=300
     environment:
       POSTGRES_USER: wuzapi
       POSTGRES_PASSWORD: wuzapi

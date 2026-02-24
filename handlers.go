@@ -145,10 +145,26 @@ func (s *server) Connect() http.HandlerFunc {
 
 		if clientManager.GetWhatsmeowClient(txtid) != nil {
 			isConnected := clientManager.GetWhatsmeowClient(txtid).IsConnected()
-			if isConnected == true {
+			if isConnected {
 				s.Respond(w, r, http.StatusInternalServerError, errors.New("already connected"))
 				return
 			}
+
+			// If it exists but is NOT connected, we must properly terminate the old goroutine
+			// before we spawn a new "go startClient" to prevent session corruption and dual-login.
+			log.Warn().Str("jid", jid).Msg("Client exists but is disconnected. Cleaning up old session before reconnecting")
+			clientManager.GetWhatsmeowClient(txtid).Disconnect()
+			clientManager.DeleteWhatsmeowClient(txtid)
+			if ch, ok := killchannel[txtid]; ok {
+				select {
+				case ch <- true:
+				default:
+				}
+				delete(killchannel, txtid)
+			}
+			clientManager.DeleteMyClient(txtid)
+			clientManager.DeleteHTTPClient(txtid)
+			time.Sleep(1 * time.Second) // Give it a brief moment to tear down
 		}
 
 		var subscribedEvents []string
@@ -233,9 +249,17 @@ func (s *server) Disconnect() http.HandlerFunc {
 			response := map[string]interface{}{"Details": "Disconnected"}
 			responseJson, err := json.Marshal(response)
 
+			// Add client disconnect before deleting from manager
+			clientManager.GetWhatsmeowClient(txtid).Disconnect()
 			clientManager.DeleteWhatsmeowClient(txtid) // mameluco
+			clientManager.DeleteMyClient(txtid)
+			clientManager.DeleteHTTPClient(txtid)
+
 			if ch, ok := killchannel[txtid]; ok {
-				ch <- true
+				select {
+				case ch <- true:
+				default:
+				}
 				delete(killchannel, txtid)
 			}
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
@@ -38,7 +39,7 @@ func getDatabaseConfig(exPath string) DatabaseConfig {
 	dbPort := os.Getenv("DB_PORT")
 	dbSSL := os.Getenv("DB_SSLMODE")
 
-    sslMode := dbSSL
+	sslMode := dbSSL
 	if dbSSL == "true" {
 		sslMode = "require"
 	} else if dbSSL == "false" || dbSSL == "" {
@@ -77,6 +78,11 @@ func initializePostgres(config DatabaseConfig) (*sqlx.DB, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping postgres database: %w", err)
 	}
+
+	// Configure connection pool settings specifically for PostgreSQL (High Concurrency - 200+ WhatsApp Sessions)
+	db.SetMaxOpenConns(200)
+	db.SetMaxIdleConns(50)
+	db.SetConnMaxLifetime(15 * time.Minute)
 
 	return db, nil
 }

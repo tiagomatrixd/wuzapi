@@ -943,17 +943,17 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Add session info (should be available even when logging out)
 		mycli.addSessionInfo(postmap)
 		log.Info().Str("reason", evt.Reason.String()).Msg("Logged out")
-		
+
 		// Send webhook BEFORE killing the client to ensure delivery
 		sendEventWithWebHook(mycli, postmap, "")
-		
+
 		// Update DB
 		sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
 		_, err := mycli.db.Exec(sqlStmt, mycli.userID)
 		if err != nil {
 			log.Error().Err(err).Msg(sqlStmt)
 		}
-		
+
 		// Send kill signal after webhook is sent
 		if ch, ok := killchannel[mycli.userID]; ok {
 			select {
@@ -980,120 +980,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Add session info
 		mycli.addSessionInfo(postmap)
 		log.Info().Str("reason", fmt.Sprintf("%+v", evt)).Msg("Disconnected from Whatsapp")
-
-		// Attempt automatic reconnection if we have stored credentials
-		if mycli.WAClient.Store.ID != nil {
-			log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Attempting automatic reconnection after disconnect")
-			go func() {
-				// Retry loop with backoff
-				for i := 0; i < 15; i++ {
-					// Wait a bit before reconnecting (exponential backoff: 2, 4, 8, 16...)
-					sleepTime := time.Duration(2<<i) * time.Second
-					if sleepTime > 60*time.Second {
-						sleepTime = 60 * time.Second
-					}
-					log.Info().Int("attempt", i+1).Dur("wait", sleepTime).Msg("Waiting before reconnection attempt")
-					time.Sleep(sleepTime)
-
-					// Check if client still exists in manager
-					if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
-						log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
-						return
-					}
-
-					// Check if already connected
-					if mycli.WAClient.IsConnected() {
-						log.Info().Msg("Client already connected, stopping reconnection loop")
-						return
-					}
-
-					log.Info().Int("attempt", i+1).Msg("Reconnecting...")
-					err := mycli.WAClient.Connect()
-					if err != nil {
-						log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect")
-					} else {
-						log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Successfully reconnected automatically")
-						// Update DB to reflect connected state
-						sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
-						_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
-						if dbErr != nil {
-							log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
-						}
-						return // Success
-					}
-				}
-
-				// If we exhausted retries
-				log.Error().Msg("Exhausted reconnection attempts")
-				sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
-				_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
-				if dbErr != nil {
-					log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
-				}
-			}()
-		} else {
-			log.Warn().Msg("No stored credentials for automatic reconnection")
-		}
 	case *events.ConnectFailure:
 		postmap["type"] = "ConnectFailure"
 		dowebhook = 1
 		// Add session info
 		mycli.addSessionInfo(postmap)
 		log.Error().Str("reason", fmt.Sprintf("%+v", evt)).Msg("Failed to connect to Whatsapp")
-
-		// Attempt automatic reconnection if we have stored credentials
-		if mycli.WAClient.Store.ID != nil {
-			log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Attempting automatic reconnection after connection failure")
-			go func() {
-				// Retry loop with backoff
-				for i := 0; i < 15; i++ {
-					// Wait a bit before reconnecting (exponential backoff: 2, 4, 8, 16...)
-					sleepTime := time.Duration(2<<i) * time.Second
-					if sleepTime > 60*time.Second {
-						sleepTime = 60 * time.Second
-					}
-					log.Info().Int("attempt", i+1).Dur("wait", sleepTime).Msg("Waiting before reconnection attempt (ConnectFailure)")
-					time.Sleep(sleepTime)
-
-					// Check if client still exists in manager
-					if clientManager.GetWhatsmeowClient(mycli.userID) == nil {
-						log.Warn().Str("userID", mycli.userID).Msg("Client no longer exists in manager, skipping reconnection")
-						return
-					}
-
-					// Check if already connected
-					if mycli.WAClient.IsConnected() {
-						log.Info().Msg("Client already connected, stopping reconnection loop")
-						return
-					}
-
-					log.Info().Int("attempt", i+1).Msg("Reconnecting...")
-					err := mycli.WAClient.Connect()
-					if err != nil {
-						log.Error().Err(err).Str("jid", mycli.WAClient.Store.ID.String()).Msg("Failed to automatically reconnect after connection failure")
-					} else {
-						log.Info().Str("jid", mycli.WAClient.Store.ID.String()).Msg("Successfully reconnected automatically after connection failure")
-						// Update DB to reflect connected state
-						sqlStmt := `UPDATE users SET connected=1 WHERE id=$1`
-						_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
-						if dbErr != nil {
-							log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
-						}
-						return // Success
-					}
-				}
-
-				// If we exhausted retries
-				log.Error().Msg("Exhausted reconnection attempts after connection failure")
-				sqlStmt := `UPDATE users SET connected=0 WHERE id=$1`
-				_, dbErr := mycli.db.Exec(sqlStmt, mycli.userID)
-				if dbErr != nil {
-					log.Error().Err(dbErr).Msg("Failed to update connected status in DB")
-				}
-			}()
-		} else {
-			log.Warn().Msg("No stored credentials for automatic reconnection")
-		}
 	case *events.GroupInfo:
 		postmap["type"] = "GroupInfo"
 		dowebhook = 1
