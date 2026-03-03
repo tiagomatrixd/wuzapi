@@ -5187,12 +5187,21 @@ func (s *server) DeleteUser() http.HandlerFunc {
 			})
 			return
 		}
+		// 1. Disconnect and remove from memory if active
+		if client := clientManager.GetWhatsmeowClient(userID); client != nil {
+			log.Info().Str("id", userID).Msg("Disconnecting from WhatsApp on user delete")
+			client.Disconnect()
+		}
+		clientManager.DeleteWhatsmeowClient(userID)
+		clientManager.DeleteMyClient(userID)
+		clientManager.DeleteHTTPClient(userID)
+
 		if rowsAffected == 0 {
 			s.respondWithJSON(w, http.StatusNotFound, map[string]interface{}{
 				"code":    http.StatusNotFound,
 				"error":   "user not found",
 				"success": false,
-				"details": fmt.Sprintf("No user found with ID: %s", userID),
+				"details": fmt.Sprintf("No user found with ID: %s (memory cleaned up if any)", userID),
 			})
 			return
 		}
@@ -5236,21 +5245,16 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 			return
 		}
 		if !exists {
-			s.respondWithJSON(w, http.StatusNotFound, map[string]interface{}{
-				"code":    http.StatusNotFound,
-				"error":   "user not found",
-				"success": false,
-				"details": fmt.Sprintf("No user found with ID: %s", id),
-			})
-			return
+			log.Warn().Str("id", id).Msg("User not found in database, but attempting memory/file cleanup")
 		}
 
 		// Get user info before deletion
 		var uname, jid, token string
-		err = s.db.QueryRow("SELECT name, jid, token FROM users WHERE id = $1", id).Scan(&uname, &jid, &token)
-		if err != nil {
-			log.Error().Err(err).Str("id", id).Msg("problem retrieving user information")
-			// Continue anyway since we have the ID
+		if exists {
+			err = s.db.QueryRow("SELECT name, jid, token FROM users WHERE id = $1", id).Scan(&uname, &jid, &token)
+			if err != nil {
+				log.Error().Err(err).Str("id", id).Msg("problem retrieving user information")
+			}
 		}
 
 		// 1. Logout and disconnect instance
@@ -5264,22 +5268,26 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 		}
 
 		// 2. Remove from DB
-		_, err = s.db.Exec("DELETE FROM users WHERE id = $1", id)
-		if err != nil {
-			s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
-				"code":    http.StatusInternalServerError,
-				"error":   "database error",
-				"success": false,
-				"details": "failed to delete user from database",
-			})
-			return
+		if exists {
+			_, err = s.db.Exec("DELETE FROM users WHERE id = $1", id)
+			if err != nil {
+				s.respondWithJSON(w, http.StatusInternalServerError, map[string]interface{}{
+					"code":    http.StatusInternalServerError,
+					"error":   "database error",
+					"success": false,
+					"details": "failed to delete user from database",
+				})
+				return
+			}
 		}
 
 		// 3. Cleanup from memory
 		clientManager.DeleteWhatsmeowClient(id)
 		clientManager.DeleteMyClient(id)
 		clientManager.DeleteHTTPClient(id)
-		userinfocache.Delete(token)
+		if exists && token != "" {
+			userinfocache.Delete(token)
+		}
 
 		// 4. Remove media files
 		userDirectory := filepath.Join(s.exPath, "files", id)
@@ -5292,16 +5300,18 @@ func (s *server) DeleteUserComplete() http.HandlerFunc {
 		}
 
 		// 5. Remove files from S3 (if enabled)
-		var s3Enabled bool
-		err = s.db.QueryRow("SELECT s3_enabled FROM users WHERE id = $1", id).Scan(&s3Enabled)
-		if err == nil && s3Enabled {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			errS3 := GetS3Manager().DeleteAllUserObjects(ctx, id)
-			if errS3 != nil {
-				log.Error().Err(errS3).Str("id", id).Msg("error removing user files from S3")
-			} else {
-				log.Info().Str("id", id).Msg("user files from S3 removed successfully")
+		if exists {
+			var s3Enabled bool
+			err = s.db.QueryRow("SELECT s3_enabled FROM users WHERE id = $1", id).Scan(&s3Enabled)
+			if err == nil && s3Enabled {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				errS3 := GetS3Manager().DeleteAllUserObjects(ctx, id)
+				if errS3 != nil {
+					log.Error().Err(errS3).Str("id", id).Msg("error removing user files from S3")
+				} else {
+					log.Info().Str("id", id).Msg("user files from S3 removed successfully")
+				}
 			}
 		}
 
