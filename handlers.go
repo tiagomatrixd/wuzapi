@@ -3952,10 +3952,10 @@ func (s *server) ListGroups() http.HandlerFunc {
 		lockKey := "refresh_lock_" + uid
 		if _, processing := groupListCache.Get(lockKey); !processing {
 			groupListCache.Set(lockKey, true, 2*time.Minute)
-			
+
 			go func() {
 				defer groupListCache.Delete(lockKey)
-				
+
 				cli := clientManager.GetWhatsmeowClient(uid)
 				if cli == nil || !cli.IsConnected() {
 					return
@@ -3974,7 +3974,7 @@ func (s *server) ListGroups() http.HandlerFunc {
 				for _, info := range resp {
 					gc.Groups = append(gc.Groups, *info)
 				}
-				
+
 				responseJson, err := json.Marshal(gc)
 				if err == nil {
 					// 1. Update Memory
@@ -3984,7 +3984,7 @@ func (s *server) ListGroups() http.HandlerFunc {
 					}, cache.NoExpiration)
 
 					// 2. Update DB
-					_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3", 
+					_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3",
 						string(responseJson), time.Now(), uid)
 					if err != nil {
 						log.Error().Err(err).Str("userid", uid).Msg("Failed to update groups cache in DB")
@@ -4002,7 +4002,7 @@ func (s *server) ListGroups() http.HandlerFunc {
 		if item, found := groupListCache.Get(txtid); found {
 			if cached, ok := item.(CachedGroupList); ok {
 				s.Respond(w, r, http.StatusOK, string(cached.Data))
-				
+
 				if time.Since(cached.Timestamp) > 5*time.Minute {
 					refreshCache(txtid)
 				}
@@ -4073,8 +4073,8 @@ func (s *server) ListGroups() http.HandlerFunc {
 		}, cache.NoExpiration)
 
 		go func() {
-			_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3", 
-						string(responseJson), time.Now(), txtid)
+			_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3",
+				string(responseJson), time.Now(), txtid)
 			if err != nil {
 				log.Error().Err(err).Str("userid", txtid).Msg("Failed to update groups cache in DB")
 			}
