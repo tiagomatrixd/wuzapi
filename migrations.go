@@ -55,6 +55,11 @@ var migrations = []Migration{
 		Name:  "add_groups_cache",
 		UpSQL: addGroupsCacheSQL,
 	},
+	{
+		ID:    6,
+		Name:  "ensure_groups_cache",
+		UpSQL: ensureGroupsCacheSQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -159,6 +164,16 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'groups_cache_updated_at') THEN
         ALTER TABLE users ADD COLUMN groups_cache_updated_at TIMESTAMP;
     END IF;
+END $$;
+`
+
+const ensureGroupsCacheSQL = `
+-- PostgreSQL version
+DO $$
+BEGIN
+    -- using ADD COLUMN IF NOT EXISTS to avoid schema collisions in information_schema
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS groups_cache TEXT DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS groups_cache_updated_at TIMESTAMP;
 END $$;
 `
 
@@ -333,7 +348,7 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
-	} else if migration.ID == 5 {
+	} else if migration.ID == 5 || migration.ID == 6 {
 		if db.DriverName() == "sqlite" {
 			err = addColumnIfNotExistsSQLite(tx, "users", "groups_cache", "TEXT DEFAULT ''")
 			if err == nil {
