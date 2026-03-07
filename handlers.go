@@ -3942,21 +3942,116 @@ func (s *server) ListGroups() http.HandlerFunc {
 		Groups []types.GroupInfo
 	}
 
-	return func(w http.ResponseWriter, r *http.Request) {
+	type CachedGroupList struct {
+		Data      []byte
+		Timestamp time.Time
+	}
 
+	// Helper to refresh cache in background
+	refreshCache := func(uid string) {
+		lockKey := "refresh_lock_" + uid
+		if _, processing := groupListCache.Get(lockKey); !processing {
+			groupListCache.Set(lockKey, true, 2*time.Minute)
+			
+			go func() {
+				defer groupListCache.Delete(lockKey)
+				
+				cli := clientManager.GetWhatsmeowClient(uid)
+				if cli == nil || !cli.IsConnected() {
+					return
+				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+
+				resp, err := cli.GetJoinedGroups(ctx)
+				if err != nil {
+					log.Warn().Err(err).Str("userid", uid).Msg("Background group refresh failing")
+					return
+				}
+
+				gc := new(GroupCollection)
+				for _, info := range resp {
+					gc.Groups = append(gc.Groups, *info)
+				}
+				
+				responseJson, err := json.Marshal(gc)
+				if err == nil {
+					// 1. Update Memory
+					groupListCache.Set(uid, CachedGroupList{
+						Data:      responseJson,
+						Timestamp: time.Now(),
+					}, cache.NoExpiration)
+
+					// 2. Update DB
+					_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3", 
+						string(responseJson), time.Now(), uid)
+					if err != nil {
+						log.Error().Err(err).Str("userid", uid).Msg("Failed to update groups cache in DB")
+					}
+					log.Info().Str("userid", uid).Msg("Background group cache refreshed and saved")
+				}
+			}()
+		}
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
-		if clientManager.GetWhatsmeowClient(txtid) == nil {
-			s.Respond(w, r, http.StatusInternalServerError, errors.New("no session"))
+		// 1. Memory Cache
+		if item, found := groupListCache.Get(txtid); found {
+			if cached, ok := item.(CachedGroupList); ok {
+				s.Respond(w, r, http.StatusOK, string(cached.Data))
+				
+				if time.Since(cached.Timestamp) > 5*time.Minute {
+					refreshCache(txtid)
+				}
+				return
+			}
+		}
+
+		// 2. DB Cache
+		var dbCache string
+		var dbUpdatedAt sql.NullTime
+		err := s.db.QueryRow("SELECT groups_cache, groups_cache_updated_at FROM users WHERE id=$1", txtid).Scan(&dbCache, &dbUpdatedAt)
+		if err == nil && dbCache != "" {
+			lastUpdate := time.Now()
+			if dbUpdatedAt.Valid {
+				lastUpdate = dbUpdatedAt.Time
+			}
+
+			// Populate Memory
+			groupListCache.Set(txtid, CachedGroupList{
+				Data:      []byte(dbCache),
+				Timestamp: lastUpdate,
+			}, cache.NoExpiration)
+
+			s.Respond(w, r, http.StatusOK, dbCache)
+
+			if time.Since(lastUpdate) > 5*time.Minute {
+				refreshCache(txtid)
+			}
 			return
 		}
 
-		resp, err := clientManager.GetWhatsmeowClient(txtid).GetJoinedGroups(r.Context())
+		// 3. Synchronous Fetch (Fallback)
+		cli := clientManager.GetWhatsmeowClient(txtid)
+		if cli == nil {
+			s.Respond(w, r, http.StatusServiceUnavailable, errors.New("no session"))
+			return
+		}
 
+		if !cli.IsConnected() {
+			s.Respond(w, r, http.StatusServiceUnavailable, errors.New("client not connected to whatsapp"))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		resp, err := cli.GetJoinedGroups(ctx)
 		if err != nil {
-			msg := fmt.Sprintf("failed to get group list: %v", err)
-			log.Error().Msg(msg)
-			s.Respond(w, r, http.StatusInternalServerError, msg)
+			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to get group list: %v", err))
 			return
 		}
 
@@ -3968,11 +4063,24 @@ func (s *server) ListGroups() http.HandlerFunc {
 		responseJson, err := json.Marshal(gc)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, err)
-		} else {
-			s.Respond(w, r, http.StatusOK, string(responseJson))
+			return
 		}
 
-		return
+		// Update Cache & DB
+		groupListCache.Set(txtid, CachedGroupList{
+			Data:      responseJson,
+			Timestamp: time.Now(),
+		}, cache.NoExpiration)
+
+		go func() {
+			_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3", 
+						string(responseJson), time.Now(), txtid)
+			if err != nil {
+				log.Error().Err(err).Str("userid", txtid).Msg("Failed to update groups cache in DB")
+			}
+		}()
+
+		s.Respond(w, r, http.StatusOK, string(responseJson))
 	}
 }
 

@@ -55,6 +55,7 @@ var (
 	lastMessageCache = cache.New(24*time.Hour, 24*time.Hour)
 	avatarCache      = cache.New(1*time.Hour, 2*time.Hour)
 	groupInfoCache   = cache.New(5*time.Minute, 10*time.Minute) // Cache group metadata to avoid repeated API calls
+	groupListCache   = cache.New(5*time.Minute, 10*time.Minute) // Cache group list to avoid repeated API calls
 )
 
 const version = "1.0.2"

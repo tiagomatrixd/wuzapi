@@ -50,6 +50,11 @@ var migrations = []Migration{
 		Name:  "add_s3_support",
 		UpSQL: addS3SupportSQL,
 	},
+	{
+		ID:    5,
+		Name:  "add_groups_cache",
+		UpSQL: addGroupsCacheSQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -139,6 +144,20 @@ BEGIN
     
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 's3_retention_days') THEN
         ALTER TABLE users ADD COLUMN s3_retention_days INTEGER DEFAULT 30;
+    END IF;
+END $$;
+`
+
+const addGroupsCacheSQL = `
+-- PostgreSQL version
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'groups_cache') THEN
+        ALTER TABLE users ADD COLUMN groups_cache TEXT DEFAULT '';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'groups_cache_updated_at') THEN
+        ALTER TABLE users ADD COLUMN groups_cache_updated_at TIMESTAMP;
     END IF;
 END $$;
 `
@@ -310,6 +329,15 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 			}
 			if err == nil {
 				err = addColumnIfNotExistsSQLite(tx, "users", "s3_retention_days", "INTEGER DEFAULT 30")
+			}
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 5 {
+		if db.DriverName() == "sqlite" {
+			err = addColumnIfNotExistsSQLite(tx, "users", "groups_cache", "TEXT DEFAULT ''")
+			if err == nil {
+				err = addColumnIfNotExistsSQLite(tx, "users", "groups_cache_updated_at", "DATETIME")
 			}
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
