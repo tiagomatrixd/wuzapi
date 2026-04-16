@@ -189,7 +189,8 @@ END $$;
 
 const messageSecretsCreatedAtSQL = `
 -- Add created_at to whatsmeow_message_secrets so we can purge old keys.
--- Existing rows get the current timestamp; new rows use DEFAULT NOW().
+-- In PostgreSQL 11+, ADD COLUMN with a DEFAULT is a fast metadata-only operation
+-- (no table rewrite). Existing rows will report the column default lazily.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -198,8 +199,6 @@ BEGIN
     ) THEN
         ALTER TABLE whatsmeow_message_secrets
             ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-        -- Backfill existing rows so they age normally from today
-        UPDATE whatsmeow_message_secrets SET created_at = NOW();
     END IF;
 END $$;
 `
@@ -417,9 +416,6 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 	} else if migration.ID == 8 {
 		if db.DriverName() == "sqlite" {
 			err = addColumnIfNotExistsSQLite(tx, "whatsmeow_message_secrets", "created_at", "DATETIME DEFAULT (datetime('now'))")
-			if err == nil {
-				_, err = tx.Exec("UPDATE whatsmeow_message_secrets SET created_at = datetime('now') WHERE created_at IS NULL")
-			}
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
