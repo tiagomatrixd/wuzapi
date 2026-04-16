@@ -206,16 +206,21 @@ END $$;
 
 const groupsCacheGzipSQL = `
 -- Migrate groups_cache column from TEXT to BYTEA to store gzip-compressed data.
--- Existing plain-text JSON rows are preserved: the application handles both
--- legacy plain JSON and new gzip data transparently via the decompressGzip helper.
+-- PostgreSQL cannot automatically cast TEXT with a DEFAULT to BYTEA, so we must:
+--   1. Drop the existing default constraint first
+--   2. Alter the column type (clearing data via USING NULL)
+--   3. Leave without default (NULL is fine for optional cache)
 DO $$
+DECLARE
+    v_default TEXT;
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'users' AND column_name = 'groups_cache' AND data_type = 'text'
     ) THEN
-        -- Cast existing TEXT data to BYTEA, clearing rows to avoid decode errors
-        -- (old plain-JSON rows will be re-populated on next API call via fallback fetch)
+        -- Drop any existing DEFAULT so PostgreSQL can perform the type change
+        ALTER TABLE users ALTER COLUMN groups_cache DROP DEFAULT;
+        -- Clear data and change type; old plain-JSON will be re-fetched on next API call
         ALTER TABLE users ALTER COLUMN groups_cache TYPE BYTEA USING NULL;
     END IF;
 END $$;
