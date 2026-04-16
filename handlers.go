@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -3935,6 +3936,37 @@ func (s *server) MarkRead() http.HandlerFunc {
 	}
 }
 
+// compressGzip compresses data using gzip and returns the compressed bytes.
+func compressGzip(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = w.Write(data); err != nil {
+		return nil, err
+	}
+	if err = w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// decompressGzip decompresses gzip-compressed bytes and returns the original data.
+// If data is not gzip-compressed (legacy plain JSON), it returns data as-is.
+func decompressGzip(data []byte) ([]byte, error) {
+	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+		// Not gzip — legacy plain JSON, return as-is
+		return data, nil
+	}
+	r, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
 // List groups
 func (s *server) ListGroups() http.HandlerFunc {
 
@@ -3945,6 +3977,21 @@ func (s *server) ListGroups() http.HandlerFunc {
 	type CachedGroupList struct {
 		Data      []byte
 		Timestamp time.Time
+	}
+
+	// saveGroupCache compresses and persists the group JSON to DB.
+	saveGroupCache := func(uid string, rawJson []byte) {
+		compressed, err := compressGzip(rawJson)
+		if err != nil {
+			log.Error().Err(err).Str("userid", uid).Msg("Failed to compress groups cache")
+			// Fall back to plain JSON if compression fails
+			compressed = rawJson
+		}
+		_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3",
+			compressed, time.Now(), uid)
+		if err != nil {
+			log.Error().Err(err).Str("userid", uid).Msg("Failed to update groups cache in DB")
+		}
 	}
 
 	// Helper to refresh cache in background
@@ -3977,18 +4024,14 @@ func (s *server) ListGroups() http.HandlerFunc {
 
 				responseJson, err := json.Marshal(gc)
 				if err == nil {
-					// 1. Update Memory
+					// 1. Update Memory (store uncompressed for fast serving)
 					groupListCache.Set(uid, CachedGroupList{
 						Data:      responseJson,
 						Timestamp: time.Now(),
 					}, cache.NoExpiration)
 
-					// 2. Update DB
-					_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3",
-						string(responseJson), time.Now(), uid)
-					if err != nil {
-						log.Error().Err(err).Str("userid", uid).Msg("Failed to update groups cache in DB")
-					}
+					// 2. Update DB (store compressed to save RAM/disk)
+					go saveGroupCache(uid, responseJson)
 					log.Info().Str("userid", uid).Msg("Background group cache refreshed and saved")
 				}
 			}()
@@ -4010,28 +4053,34 @@ func (s *server) ListGroups() http.HandlerFunc {
 			}
 		}
 
-		// 2. DB Cache
-		var dbCache string
+		// 2. DB Cache (stored as gzip-compressed bytes)
+		var dbCacheBytes []byte
 		var dbUpdatedAt sql.NullTime
-		err := s.db.QueryRow("SELECT groups_cache, groups_cache_updated_at FROM users WHERE id=$1", txtid).Scan(&dbCache, &dbUpdatedAt)
-		if err == nil && dbCache != "" {
-			lastUpdate := time.Now()
-			if dbUpdatedAt.Valid {
-				lastUpdate = dbUpdatedAt.Time
+		err := s.db.QueryRow("SELECT groups_cache, groups_cache_updated_at FROM users WHERE id=$1", txtid).Scan(&dbCacheBytes, &dbUpdatedAt)
+		if err == nil && len(dbCacheBytes) > 0 {
+			// Decompress (handles both legacy plain JSON and new gzip data)
+			rawJson, err := decompressGzip(dbCacheBytes)
+			if err != nil {
+				log.Error().Err(err).Str("userid", txtid).Msg("Failed to decompress groups cache from DB")
+			} else {
+				lastUpdate := time.Now()
+				if dbUpdatedAt.Valid {
+					lastUpdate = dbUpdatedAt.Time
+				}
+
+				// Populate Memory with uncompressed data
+				groupListCache.Set(txtid, CachedGroupList{
+					Data:      rawJson,
+					Timestamp: lastUpdate,
+				}, cache.NoExpiration)
+
+				s.Respond(w, r, http.StatusOK, string(rawJson))
+
+				if time.Since(lastUpdate) > 5*time.Minute {
+					refreshCache(txtid)
+				}
+				return
 			}
-
-			// Populate Memory
-			groupListCache.Set(txtid, CachedGroupList{
-				Data:      []byte(dbCache),
-				Timestamp: lastUpdate,
-			}, cache.NoExpiration)
-
-			s.Respond(w, r, http.StatusOK, dbCache)
-
-			if time.Since(lastUpdate) > 5*time.Minute {
-				refreshCache(txtid)
-			}
-			return
 		}
 
 		// 3. Synchronous Fetch (Fallback)
@@ -4066,19 +4115,14 @@ func (s *server) ListGroups() http.HandlerFunc {
 			return
 		}
 
-		// Update Cache & DB
+		// Update Memory Cache (uncompressed for fast serving)
 		groupListCache.Set(txtid, CachedGroupList{
 			Data:      responseJson,
 			Timestamp: time.Now(),
 		}, cache.NoExpiration)
 
-		go func() {
-			_, err = s.db.Exec("UPDATE users SET groups_cache=$1, groups_cache_updated_at=$2 WHERE id=$3",
-				string(responseJson), time.Now(), txtid)
-			if err != nil {
-				log.Error().Err(err).Str("userid", txtid).Msg("Failed to update groups cache in DB")
-			}
-		}()
+		// Update DB (compressed to save RAM/disk)
+		go saveGroupCache(txtid, responseJson)
 
 		s.Respond(w, r, http.StatusOK, string(responseJson))
 	}

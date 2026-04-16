@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -395,6 +396,7 @@ func (s *server) startWakeupScheduler() {
 	// Run immediately on startup after a small delay to let sessions connect
 	time.Sleep(30 * time.Second)
 	s.wakeupAllSessions()
+	s.purgeOldMessageSecrets()
 
 	// Then run periodically
 	ticker := time.NewTicker(interval)
@@ -402,6 +404,37 @@ func (s *server) startWakeupScheduler() {
 
 	for range ticker.C {
 		s.wakeupAllSessions()
+		s.purgeOldMessageSecrets()
+	}
+}
+
+// purgeOldMessageSecrets deletes whatsmeow_message_secrets older than 7 days.
+// These keys are only needed to decrypt in-flight retries; after delivery via
+// webhook they are useless and accumulate indefinitely without this cleanup.
+func (s *server) purgeOldMessageSecrets() {
+	var (
+		result sql.Result
+		err    error
+	)
+
+	if s.db.DriverName() == "sqlite" {
+		result, err = s.db.Exec(
+			"DELETE FROM whatsmeow_message_secrets WHERE created_at < datetime('now', '-7 days')",
+		)
+	} else {
+		result, err = s.db.Exec(
+			"DELETE FROM whatsmeow_message_secrets WHERE created_at < NOW() - INTERVAL '7 days'",
+		)
+	}
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to purge old message secrets")
+		return
+	}
+
+	affected, _ := result.RowsAffected()
+	if affected > 0 {
+		log.Info().Int64("deleted", affected).Msg("Purged old whatsmeow_message_secrets")
 	}
 }
 

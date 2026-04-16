@@ -60,6 +60,16 @@ var migrations = []Migration{
 		Name:  "ensure_groups_cache",
 		UpSQL: ensureGroupsCacheSQL,
 	},
+	{
+		ID:    7,
+		Name:  "groups_cache_gzip",
+		UpSQL: groupsCacheGzipSQL,
+	},
+	{
+		ID:    8,
+		Name:  "message_secrets_created_at",
+		UpSQL: messageSecretsCreatedAtSQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -174,6 +184,40 @@ BEGIN
     -- using ADD COLUMN IF NOT EXISTS to avoid schema collisions in information_schema
     ALTER TABLE users ADD COLUMN IF NOT EXISTS groups_cache TEXT DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS groups_cache_updated_at TIMESTAMP;
+END $$;
+`
+
+const messageSecretsCreatedAtSQL = `
+-- Add created_at to whatsmeow_message_secrets so we can purge old keys.
+-- Existing rows get the current timestamp; new rows use DEFAULT NOW().
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'whatsmeow_message_secrets' AND column_name = 'created_at'
+    ) THEN
+        ALTER TABLE whatsmeow_message_secrets
+            ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        -- Backfill existing rows so they age normally from today
+        UPDATE whatsmeow_message_secrets SET created_at = NOW();
+    END IF;
+END $$;
+`
+
+const groupsCacheGzipSQL = `
+-- Migrate groups_cache column from TEXT to BYTEA to store gzip-compressed data.
+-- Existing plain-text JSON rows are preserved: the application handles both
+-- legacy plain JSON and new gzip data transparently via the decompressGzip helper.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'users' AND column_name = 'groups_cache' AND data_type = 'text'
+    ) THEN
+        -- Cast existing TEXT data to BYTEA, clearing rows to avoid decode errors
+        -- (old plain-JSON rows will be re-populated on next API call via fallback fetch)
+        ALTER TABLE users ALTER COLUMN groups_cache TYPE BYTEA USING NULL;
+    END IF;
 END $$;
 `
 
@@ -353,6 +397,23 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 			err = addColumnIfNotExistsSQLite(tx, "users", "groups_cache", "TEXT DEFAULT ''")
 			if err == nil {
 				err = addColumnIfNotExistsSQLite(tx, "users", "groups_cache_updated_at", "DATETIME")
+			}
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 7 {
+		if db.DriverName() == "sqlite" {
+			// SQLite stores BLOB natively; clear existing TEXT data so decompressGzip
+			// won't choke on old plain-JSON rows — they'll be refetched on next API call.
+			_, err = tx.Exec("UPDATE users SET groups_cache = NULL")
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 8 {
+		if db.DriverName() == "sqlite" {
+			err = addColumnIfNotExistsSQLite(tx, "whatsmeow_message_secrets", "created_at", "DATETIME DEFAULT (datetime('now'))")
+			if err == nil {
+				_, err = tx.Exec("UPDATE whatsmeow_message_secrets SET created_at = datetime('now') WHERE created_at IS NULL")
 			}
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
