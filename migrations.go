@@ -188,9 +188,14 @@ END $$;
 `
 
 const messageSecretsCreatedAtSQL = `
--- Add created_at to whatsmeow_message_secrets so we can purge old keys.
--- In PostgreSQL 11+, ADD COLUMN with a DEFAULT is a fast metadata-only operation
--- (no table rewrite). Existing rows will report the column default lazily.
+-- Step 1: TRUNCATE removes all existing secrets instantly (~2.4GB freed).
+-- These keys are for messages already delivered via webhook; safe to discard.
+-- Migrations run at startup before any WhatsApp session connects, so no
+-- in-flight messages are affected.
+TRUNCATE TABLE whatsmeow_message_secrets;
+
+-- Step 2: Add created_at on the now-empty table — instant (zero rows).
+-- New secrets inserted by whatsmeow will carry this column automatically.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -415,7 +420,11 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 		}
 	} else if migration.ID == 8 {
 		if db.DriverName() == "sqlite" {
-			err = addColumnIfNotExistsSQLite(tx, "whatsmeow_message_secrets", "created_at", "DATETIME DEFAULT (datetime('now'))")
+			// Clear existing secrets first (safe: sessions not yet connected)
+			_, err = tx.Exec("DELETE FROM whatsmeow_message_secrets")
+			if err == nil {
+				err = addColumnIfNotExistsSQLite(tx, "whatsmeow_message_secrets", "created_at", "DATETIME DEFAULT (datetime('now'))")
+			}
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
