@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1318,12 +1319,13 @@ func (s *server) SendSticker() http.HandlerFunc {
 // Sends Video message
 func (s *server) SendVideo() http.HandlerFunc {
 
-	type imageStruct struct {
+	type videoStruct struct {
 		Phone         string
 		Video         string
 		Caption       string
 		Id            string
 		JPEGThumbnail []byte
+		GifPlayback   bool
 		MimeType      string
 		ContextInfo   waE2E.ContextInfo
 	}
@@ -1341,7 +1343,7 @@ func (s *server) SendVideo() http.HandlerFunc {
 		}
 
 		decoder := json.NewDecoder(r.Body)
-		var t imageStruct
+		var t videoStruct
 		err := decoder.Decode(&t)
 		if err != nil {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode Payload"))
@@ -1373,6 +1375,7 @@ func (s *server) SendVideo() http.HandlerFunc {
 
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
+		var thumbnailBytes []byte
 
 		if strings.HasPrefix(t.Video, "data") {
 			var dataURL, err = dataurl.DecodeString(t.Video)
@@ -1387,6 +1390,45 @@ func (s *server) SendVideo() http.HandlerFunc {
 					return
 				}
 			}
+
+			// Generate thumbnail for video using ffmpeg
+			if len(t.JPEGThumbnail) == 0 {
+				tmpInput, err := os.CreateTemp("", "video-*.mp4")
+				if err == nil {
+					defer os.Remove(tmpInput.Name())
+					if _, err := tmpInput.Write(filedata); err == nil {
+						tmpInput.Close()
+						tmpOutput := tmpInput.Name() + ".jpg"
+						defer os.Remove(tmpOutput)
+
+						// Attempt to extract one frame from the middle of the video or start
+						cmd := exec.Command("ffmpeg", "-i", tmpInput.Name(), "-ss", "00:00:01", "-vframes", "1", "-q:v", "5", tmpOutput)
+						err = cmd.Run()
+						if err != nil {
+							// If fails at 1s (maybe short video), try at start
+							cmd = exec.Command("ffmpeg", "-i", tmpInput.Name(), "-vframes", "1", "-q:v", "5", tmpOutput)
+							_ = cmd.Run()
+						}
+
+						if extractedBytes, err := os.ReadFile(tmpOutput); err == nil {
+							// Decode extracted jpeg
+							reader := bytes.NewReader(extractedBytes)
+							img, _, err := image.Decode(reader)
+							if err == nil {
+								// Resize to 72x72
+								m := resize.Thumbnail(72, 72, img, resize.Lanczos3)
+								buf := new(bytes.Buffer)
+								if err := jpeg.Encode(buf, m, nil); err == nil {
+									thumbnailBytes = buf.Bytes()
+								}
+							}
+						}
+					}
+				}
+			} else {
+				thumbnailBytes = t.JPEGThumbnail
+			}
+
 		} else {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("data should start with \"data:mime/type;base64,\""))
 			return
@@ -1406,7 +1448,8 @@ func (s *server) SendVideo() http.HandlerFunc {
 			FileEncSHA256: uploaded.FileEncSHA256,
 			FileSHA256:    uploaded.FileSHA256,
 			FileLength:    proto.Uint64(uint64(len(filedata))),
-			JPEGThumbnail: t.JPEGThumbnail,
+			JPEGThumbnail: thumbnailBytes,
+			GifPlayback:   proto.Bool(t.GifPlayback),
 		}}
 
 		if t.ContextInfo.StanzaID != nil {
