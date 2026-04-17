@@ -694,7 +694,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 		deviceStore = container.NewDevice()
 	}
 
-	store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_UNKNOWN.Enum()
+	store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_CHROME.Enum()
 	store.DeviceProps.Os = osName
 
 	clientManager.SetWhatsmeowClient(userID, client)
