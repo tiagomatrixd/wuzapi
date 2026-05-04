@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 	"strings"
 	"time"
 
@@ -36,6 +37,8 @@ type MyClient struct {
 	token          string
 	subscriptions  []string
 	db             *sqlx.DB
+	appStateRecoveryLock      sync.Mutex
+	appStateFullSyncAttempted map[appstate.WAPatchName]time.Time
 }
 
 // addSessionInfo adds the connected session information to the postmap
@@ -675,6 +678,9 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	} else {
 		client = whatsmeow.NewClient(deviceStore, nil)
 	}
+	client.SynchronousAck = true
+	client.AutomaticMessageRerequestFromPhone = true
+	client.SendReportingTokens = true
 
 	// Disable automatic history sync to improve performance and reduce bandwidth
 	// When set to true, history sync must be manually requested via /session/history endpoint
@@ -698,8 +704,16 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	store.DeviceProps.Os = osName
 
 	clientManager.SetWhatsmeowClient(userID, client)
-	mycli := MyClient{client, 1, userID, token, subscriptions, s.db}
-	mycli.eventHandlerID = mycli.WAClient.AddEventHandler(mycli.myEventHandler)
+	mycli := MyClient{
+		WAClient:                   client,
+		eventHandlerID:            1,
+		userID:                    userID,
+		token:                     token,
+		subscriptions:             subscriptions,
+		db:                        s.db,
+		appStateFullSyncAttempted: make(map[appstate.WAPatchName]time.Time),
+	}
+	mycli.eventHandlerID = mycli.WAClient.AddEventHandlerWithSuccessStatus(mycli.myEventHandler)
 
 	// CORREÇÃO: Armazenar o MyClient no clientManager
 	clientManager.SetMyClient(userID, &mycli)
@@ -879,7 +893,80 @@ func fileToBase64(filepath string) (string, string, error) {
 	return base64.StdEncoding.EncodeToString(data), mimeType, nil
 }
 
-func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+func (mycli *MyClient) handleWAAppStateSyncComplete(evt *events.AppStateSyncComplete) {
+	if len(mycli.WAClient.Store.PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
+		err := mycli.WAClient.SendPresence(context.Background(), types.PresenceUnavailable)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to send presence after app state sync")
+		}
+	}
+
+	mycli.appStateRecoveryLock.Lock()
+	defer mycli.appStateRecoveryLock.Unlock()
+
+	if ts, exists := mycli.appStateFullSyncAttempted[evt.Name]; exists {
+		delete(mycli.appStateFullSyncAttempted, evt.Name)
+		log.Debug().
+			Time("full_sync_ts", ts).
+			Str("patch_name", string(evt.Name)).
+			Uint64("patch_version", evt.Version).
+			Msg("Unmarked app state full sync attempted after successful sync")
+	}
+}
+
+func (mycli *MyClient) handleWAAppStateSyncError(evt *events.AppStateSyncError) {
+	mycli.appStateRecoveryLock.Lock()
+	lastFullSync := mycli.appStateFullSyncAttempted[evt.Name]
+	if !evt.FullSync {
+		if !lastFullSync.IsZero() {
+			mycli.appStateRecoveryLock.Unlock()
+			log.Debug().
+			Err(evt.Error).
+			Time("last_full_sync_attempt", lastFullSync).
+			Str("patch_name", string(evt.Name)).
+			Msg("App state sync failed, but full sync already attempted")
+			return
+		}
+		mycli.appStateFullSyncAttempted[evt.Name] = time.Now()
+		mycli.appStateRecoveryLock.Unlock()
+
+		log.Info().
+			Err(evt.Error).
+			Str("patch_name", string(evt.Name)).
+			Msg("Trying full sync for app state after partial sync error")
+
+		go func() {
+			err := mycli.WAClient.FetchAppState(context.Background(), evt.Name, true, false)
+			if err != nil {
+				log.Error().Err(err).Str("patch_name", string(evt.Name)).Msg("Full app state sync failed")
+			} else {
+				log.Debug().Str("patch_name", string(evt.Name)).Msg("Full app state sync succeeded")
+			}
+		}()
+		return
+	}
+	mycli.appStateRecoveryLock.Unlock()
+
+	log.Info().
+		Err(evt.Error).
+		Str("patch_name", string(evt.Name)).
+		Msg("Trying recovery for app state after full sync error")
+
+	go func() {
+		resp, err := mycli.WAClient.SendPeerMessage(context.Background(), whatsmeow.BuildAppStateRecoveryRequest(evt.Name))
+		if err != nil {
+			log.Error().Err(err).Str("patch_name", string(evt.Name)).Msg("Failed to send app state recovery request")
+		} else {
+			log.Debug().
+				Str("patch_name", string(evt.Name)).
+				Str("message_id", resp.ID).
+				Time("message_ts", resp.Timestamp).
+				Msg("Sent app state recovery request")
+		}
+	}()
+}
+
+func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 	txtid := mycli.userID
 	postmap := make(map[string]interface{})
 	postmap["event"] = rawEvt
@@ -888,26 +975,11 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 
 	switch evt := rawEvt.(type) {
 	case *events.AppStateSyncComplete:
-		if len(mycli.WAClient.Store.PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
-			// Send available presence first to ensure proper sync
-			err := mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
-			if err != nil {
-				log.Warn().Err(err).Msg("Failed to send available presence")
-			} else {
-				log.Info().Msg("Marked self as available temporarily")
-			}
-
-			// After 3 seconds, set to unavailable to avoid being always online
-			go func() {
-				time.Sleep(3 * time.Second)
-				err := mycli.WAClient.SendPresence(context.Background(), types.PresenceUnavailable)
-				if err != nil {
-					log.Warn().Err(err).Msg("Failed to send unavailable presence")
-				} else {
-					log.Info().Msg("Automatically marked self as unavailable (invisible)")
-				}
-			}()
-		}
+		mycli.handleWAAppStateSyncComplete(evt)
+		return true
+	case *events.AppStateSyncError:
+		mycli.handleWAAppStateSyncError(evt)
+		return false
 	case *events.Connected, *events.PushNameSetting:
 		postmap["type"] = "Connected"
 		dowebhook = 1
@@ -939,7 +1011,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		_, err = mycli.db.Exec(sqlStmt, mycli.userID)
 		if err != nil {
 			log.Error().Err(err).Msg(sqlStmt)
-			return
+			return false
 		}
 	case *events.PairSuccess:
 		log.Info().Str("userid", mycli.userID).Str("token", mycli.token).Str("ID", evt.ID.String()).Str("BusinessName", evt.BusinessName).Str("Platform", evt.Platform).Msg("QR Pair Success")
@@ -948,7 +1020,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		_, err := mycli.db.Exec(sqlStmt, jid, mycli.userID)
 		if err != nil {
 			log.Error().Err(err).Msg(sqlStmt)
-			return
+			return false
 		}
 
 		myuserinfo, found := userinfocache.Get(mycli.token)
@@ -963,13 +1035,35 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 	case *events.StreamReplaced:
 		log.Info().Msg("Received StreamReplaced event")
-		return
+		return false
 	case *events.Message:
 		// Process message asynchronously to avoid blocking the event handler
 		go mycli.processMessageAsync(evt)
-		return
+		return true
 	case *events.AppState:
 		log.Info().Str("index", fmt.Sprintf("%+v", evt.Index)).Str("actionValue", fmt.Sprintf("%+v", evt.SyncActionValue)).Msg("App state event received")
+		return true
+	case *events.OfflineSyncPreview:
+		log.Info().
+			Int("message_count", evt.Messages).
+			Int("receipt_count", evt.Receipts).
+			Int("notification_count", evt.Notifications).
+			Int("app_data_change_count", evt.AppDataChanges).
+			Msg("Server sent number of events that were missed during downtime")
+		return true
+	case *events.OfflineSyncCompleted:
+		log.Info().Int("evt_count", evt.Count).Msg("Offline sync completed")
+		return true
+	case *events.KeepAliveTimeout:
+		log.Warn().Msg("Keepalive timeout from WhatsApp websocket")
+		postmap["type"] = "KeepAliveTimeout"
+		dowebhook = 1
+		mycli.addSessionInfo(postmap)
+	case *events.KeepAliveRestored:
+		log.Info().Msg("Keepalive restored after timeout")
+		postmap["type"] = "KeepAliveRestored"
+		dowebhook = 1
+		mycli.addSessionInfo(postmap)
 	case *events.LoggedOut:
 		postmap["type"] = "LoggedOut"
 		postmap["reason"] = evt.Reason.String()
@@ -996,7 +1090,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				log.Warn().Str("userID", mycli.userID).Msg("Kill channel full or closed")
 			}
 		}
-		return // Don't process webhook again at the end
+		return false // Don't process webhook again at the end
 	case *events.CallOffer:
 		log.Info().Str("event", fmt.Sprintf("%+v", evt)).Msg("Got call offer")
 	case *events.CallAccept:
@@ -1033,9 +1127,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		log.Info().Str("group", evt.JID.String()).Msg("Joined group")
 	default:
 		log.Warn().Str("event", fmt.Sprintf("%+v", evt)).Msg("Unhandled event")
+		return true
 	}
 
 	if dowebhook == 1 {
 		sendEventWithWebHook(mycli, postmap, path)
 	}
+
+	return true
 }
