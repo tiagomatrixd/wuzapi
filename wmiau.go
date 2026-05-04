@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -31,12 +31,12 @@ import (
 
 // db field declaration as *sqlx.DB
 type MyClient struct {
-	WAClient       *whatsmeow.Client
-	eventHandlerID uint32
-	userID         string
-	token          string
-	subscriptions  []string
-	db             *sqlx.DB
+	WAClient                  *whatsmeow.Client
+	eventHandlerID            uint32
+	userID                    string
+	token                     string
+	subscriptions             []string
+	db                        *sqlx.DB
 	appStateRecoveryLock      sync.Mutex
 	appStateFullSyncAttempted map[appstate.WAPatchName]time.Time
 }
@@ -705,7 +705,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 
 	clientManager.SetWhatsmeowClient(userID, client)
 	mycli := MyClient{
-		WAClient:                   client,
+		WAClient:                  client,
 		eventHandlerID:            1,
 		userID:                    userID,
 		token:                     token,
@@ -921,10 +921,10 @@ func (mycli *MyClient) handleWAAppStateSyncError(evt *events.AppStateSyncError) 
 		if !lastFullSync.IsZero() {
 			mycli.appStateRecoveryLock.Unlock()
 			log.Debug().
-			Err(evt.Error).
-			Time("last_full_sync_attempt", lastFullSync).
-			Str("patch_name", string(evt.Name)).
-			Msg("App state sync failed, but full sync already attempted")
+				Err(evt.Error).
+				Time("last_full_sync_attempt", lastFullSync).
+				Str("patch_name", string(evt.Name)).
+				Msg("App state sync failed, but full sync already attempted")
 			return
 		}
 		mycli.appStateFullSyncAttempted[evt.Name] = time.Now()
