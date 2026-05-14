@@ -4,6 +4,7 @@ wuzapi
 .env
 .tool-versions
 iniciar.bat
+/.claude
 # Added by Claude Task Master
 # Logs
 logs
