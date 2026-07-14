@@ -68,6 +68,21 @@ func init() {
 
 	flag.Parse()
 
+	// Env-var fallback for flags not explicitly set on the command line.
+	// This lets deployments (Docker/EasyPanel) configure via WUZAPI_* env vars
+	// instead of CLI flags. CLI flags still win when both are provided.
+	setFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+	if v := os.Getenv("WUZAPI_WADEBUG"); v != "" && !setFlags["wadebug"] {
+		*waDebug = strings.ToUpper(v)
+	}
+	if v := os.Getenv("WUZAPI_LOGTYPE"); v != "" && !setFlags["logtype"] {
+		*logType = v
+	}
+	if v := os.Getenv("WUZAPI_SKIPMEDIA"); v != "" && !setFlags["skipmedia"] {
+		*skipMedia = v == "true" || v == "1"
+	}
+
 	if *versionFlag {
 		fmt.Printf("WuzAPI version %s\n", version)
 		os.Exit(0)
