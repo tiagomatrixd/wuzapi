@@ -689,14 +689,12 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	} else {
 		client = whatsmeow.NewClient(deviceStore, nil)
 	}
-	// SynchronousAck=false (whatsmeow default): message acks are sent in the
-	// background instead of inline in the serial receive queue. With it set to
-	// true, a blocked/slow ack send stalls the whole per-session handler queue,
-	// which manifests as the session staying "connected" but silently not
-	// processing incoming messages until a manual disconnect/reconnect flushes
-	// it. We process messages asynchronously (processMessageAsync) anyway, so
-	// synchronous acking gave no benefit here.
-	client.SynchronousAck = false
+	// SynchronousAck=true: only acknowledge a message to WhatsApp after our event
+	// handlers have run. If processing is stalled (e.g. the DB is momentarily
+	// unavailable), the message stays unacked, so the server re-delivers it after
+	// a reconnect instead of it being silently lost. This gives at-least-once
+	// delivery and is what makes a manual disconnect/reconnect flush the backlog.
+	client.SynchronousAck = true
 	client.AutomaticMessageRerequestFromPhone = true
 	client.SendReportingTokens = true
 
