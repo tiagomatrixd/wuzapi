@@ -669,7 +669,10 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 		deviceStore = container.NewDevice()
 	}
 
-	clientLog := waLog.Stdout("Client", *waDebug, *colorOutput)
+	// Tag the whatsmeow logger with the session's userID so its internal logs
+	// (decrypt errors, handler queue stalls, connection state, etc.) can be
+	// filtered per session, e.g. `grep Client/<userID>` in the container logs.
+	clientLog := waLog.Stdout(fmt.Sprintf("Client/%s", userID), *waDebug, *colorOutput)
 
 	// Create the client with initialized deviceStore
 	var client *whatsmeow.Client
