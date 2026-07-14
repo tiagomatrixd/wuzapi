@@ -656,7 +656,15 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 		jid, _ := parseJID(textjid)
 		deviceStore, err = container.GetDevice(context.Background(), jid)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to get device")
+			// DB error (e.g. Postgres "too many clients already"). Do NOT fall
+			// back to a fresh device here — that would drop a still-valid login
+			// and force the session to re-pair via QR. Skip it; connectOnStartup
+			// / reconnect will retry once the DB has free connections again.
+			log.Error().Err(err).Str("jid", textjid).Str("userid", userID).Msg("Failed to load device, skipping session for now")
+			return
+		}
+		if deviceStore == nil {
+			log.Warn().Str("jid", textjid).Msg("No stored device for jid, creating new device")
 			deviceStore = container.NewDevice()
 		}
 	} else {
@@ -697,23 +705,15 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	client.ManualHistorySyncDownload = true
 	log.Info().Msg("Automatic history sync disabled - manual download only")
 
-	// Now we can use the client with the manager
+	// Register the client with the manager. The device store was already loaded
+	// (or created) above and the client was built with it, so we do NOT re-fetch
+	// it here — the previous code did a second GetDevice that panicked on any DB
+	// error, crashing the whole process (and every other session) whenever
+	// Postgres was momentarily out of connections.
 	clientManager.SetWhatsmeowClient(userID, client)
-	if textjid != "" {
-		jid, _ := parseJID(textjid)
-		deviceStore, err = container.GetDevice(context.Background(), jid)
-		if err != nil {
-			panic(err)
-		}
-	} else {
-		log.Warn().Msg("No jid found. Creating new device")
-		deviceStore = container.NewDevice()
-	}
 
 	store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_CHROME.Enum()
 	store.DeviceProps.Os = osName
-
-	clientManager.SetWhatsmeowClient(userID, client)
 	mycli := MyClient{
 		WAClient:                  client,
 		eventHandlerID:            1,
