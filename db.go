@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -79,9 +80,19 @@ func initializePostgres(config DatabaseConfig) (*sqlx.DB, error) {
 		return nil, fmt.Errorf("failed to ping postgres database: %w", err)
 	}
 
-	// Configure connection pool settings specifically for PostgreSQL (High Concurrency - 200+ WhatsApp Sessions)
-	db.SetMaxOpenConns(200)
-	db.SetMaxIdleConns(50)
+	// Connection pool for the wuzapi app DB. This shares Postgres with the
+	// whatsmeow store pool, so app + store must stay under Postgres
+	// max_connections. The previous value (200) alone exceeded the default
+	// limit (100) and starved the store, causing "transaction: begin: context
+	// deadline exceeded". Tunable via WUZAPI_DB_MAX_CONNS.
+	appMaxConns := 40
+	if v := os.Getenv("WUZAPI_DB_MAX_CONNS"); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
+			appMaxConns = n
+		}
+	}
+	db.SetMaxOpenConns(appMaxConns)
+	db.SetMaxIdleConns(appMaxConns/2 + 1)
 	db.SetConnMaxLifetime(15 * time.Minute)
 
 	return db, nil

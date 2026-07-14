@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -208,7 +210,27 @@ func main() {
 			"user=%s password=%s dbname=%s host=%s port=%s sslmode=%s",
 			config.User, config.Password, config.Name, config.Host, config.Port, config.SSLMode,
 		)
-		container, err = sqlstore.New(context.Background(), "postgres", storeConnStr, dbLog)
+		// Open the whatsmeow store DB ourselves so we can bound the connection
+		// pool. sqlstore.New leaves the pool unlimited (Go default), so under
+		// load it opens more Postgres connections than max_connections allows,
+		// which surfaces as "transaction: begin: context deadline exceeded" and
+		// stalls incoming-message processing (every decrypt writes to the store).
+		// Tunable via WUZAPI_STORE_MAX_CONNS.
+		var storeDB *sql.DB
+		storeDB, err = sql.Open("postgres", storeConnStr)
+		if err == nil {
+			storeMaxConns := 40
+			if v := os.Getenv("WUZAPI_STORE_MAX_CONNS"); v != "" {
+				if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
+					storeMaxConns = n
+				}
+			}
+			storeDB.SetMaxOpenConns(storeMaxConns)
+			storeDB.SetMaxIdleConns(storeMaxConns/2 + 1)
+			storeDB.SetConnMaxLifetime(15 * time.Minute)
+			container = sqlstore.NewWithDB(storeDB, "postgres", dbLog)
+			err = container.Upgrade(context.Background())
+		}
 	} else {
 		storeConnStr = "file:" + filepath.Join(config.Path, "main.db") + "?_pragma=foreign_keys(1)&_busy_timeout=3000"
 		container, err = sqlstore.New(context.Background(), "sqlite", storeConnStr, dbLog)
