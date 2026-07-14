@@ -61,4 +61,7 @@ RUN chmod +x /app/wuzapi && \
     chmod -R 755 /app && \
     chown -R root:root /app
 
-ENTRYPOINT ["/app/wuzapi", "--logtype=console", "--color=true"]
+# Shell entrypoint so WUZAPI_WADEBUG can be turned into the --wadebug flag.
+# ${VAR:+--flag=$VAR} expands to the flag only when the env var is set and non-empty.
+# `exec` replaces the shell so the binary still receives signals (graceful shutdown).
+ENTRYPOINT ["/bin/sh", "-c", "exec /app/wuzapi --logtype=console --color=true ${WUZAPI_WADEBUG:+--wadebug=$WUZAPI_WADEBUG}"]
