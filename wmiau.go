@@ -698,6 +698,18 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	client.AutomaticMessageRerequestFromPhone = true
 	client.SendReportingTokens = true
 
+	// Keep the WhatsApp server delivering messages in real time even though the
+	// Connected handler marks the session as unavailable/invisible. Without this,
+	// going unavailable makes the client send "inactive" delivery receipts, which
+	// the server reads as the device being offline — it then stops pushing
+	// real-time messages and only flushes them on the next reconnect (the classic
+	// "receives the backlog, then goes silent" symptom). Forcing active delivery
+	// receipts keeps the message stream flowing while the presence stays
+	// unavailable, so the bot receives reliably AND stays invisible. This survives
+	// SendPresence(unavailable) because it sets the internal counter to 2, and the
+	// unavailable path only clears it when it's exactly 1.
+	client.SetForceActiveDeliveryReceipts(true)
+
 	// Disable automatic history sync to improve performance and reduce bandwidth
 	// When set to true, history sync must be manually requested via /session/history endpoint
 	client.ManualHistorySyncDownload = true
