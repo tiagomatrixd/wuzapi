@@ -993,6 +993,47 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 		dowebhook = 1
 		// Add session info
 		mycli.addSessionInfo(postmap)
+
+		// Re-assert active mode. whatsmeow sends SetPassive(false) automatically
+		// right after connecting, but if that IQ fails it only logs a warning and
+		// the device stays PASSIVE: connected and able to send, but the WhatsApp
+		// server never delivers incoming messages to it. That leaves a session
+		// silently unable to receive (can send, can list groups, keepalive works,
+		// but no message stanzas arrive). Retry it here so a transient failure at
+		// connect time — e.g. during a StreamReplaced churn — doesn't wedge the
+		// session in passive mode. SetPassive doesn't need a pushname, so do it
+		// before the pushname check below.
+		go func() {
+			for i := 0; i < 3; i++ {
+				if err := mycli.WAClient.SetPassive(context.Background(), false); err != nil {
+					log.Warn().Err(err).Int("attempt", i+1).Str("userid", mycli.userID).Msg("Failed to set active mode (passive=false), retrying")
+					time.Sleep(time.Duration(i+1) * time.Second)
+					continue
+				}
+				log.Info().Str("userid", mycli.userID).Msg("Re-asserted active mode (passive=false) for message delivery")
+				return
+			}
+			log.Error().Str("userid", mycli.userID).Msg("Could not set active mode after retries; session may not receive messages")
+		}()
+
+		// Hydrate the participating groups right after connecting. The w:g2
+		// "participating" query (GetJoinedGroups) establishes this device's group
+		// session state on the server, which is what makes group messages start
+		// being delivered to it. Without this, a freshly (re)connected companion
+		// device can send and list groups but silently never RECEIVES group
+		// messages (DMs may still work). This keeps the device invisible — it does
+		// not touch presence. Runs in the background so it doesn't block event
+		// handling. Mirrors the groupFetchAllParticipating-on-connect fix used by
+		// other whatsmeow/Baileys-based clients.
+		go func() {
+			groups, err := mycli.WAClient.GetJoinedGroups(context.Background())
+			if err != nil {
+				log.Warn().Err(err).Str("userid", mycli.userID).Msg("Failed to hydrate participating groups on connect")
+				return
+			}
+			log.Info().Int("groups", len(groups)).Str("userid", mycli.userID).Msg("Hydrated participating groups on connect")
+		}()
+
 		if len(mycli.WAClient.Store.PushName) == 0 {
 			break
 		}
