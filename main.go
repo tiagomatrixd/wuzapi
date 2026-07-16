@@ -41,6 +41,7 @@ var (
 	waDebug        = flag.String("wadebug", "", "Enable whatsmeow debug (INFO or DEBUG)")
 	logType        = flag.String("logtype", "console", "Type of log output (console or json)")
 	skipMedia      = flag.Bool("skipmedia", false, "Do not attempt to download media in messages")
+	skipOffline    = flag.Bool("skipoffline", false, "Skip the offline message backlog flushed by the server on connect; only real-time messages are processed")
 	osName         = flag.String("osname", "Mac OS 10", "Connection OSName in Whatsapp")
 	colorOutput    = flag.Bool("color", false, "Enable colored output for console logs")
 	sslcert        = flag.String("sslcertificate", "", "SSL Certificate File")
@@ -83,6 +84,9 @@ func init() {
 	}
 	if v := os.Getenv("WUZAPI_SKIPMEDIA"); v != "" && !setFlags["skipmedia"] {
 		*skipMedia = v == "true" || v == "1"
+	}
+	if v := os.Getenv("WUZAPI_SKIPOFFLINE"); v != "" && !setFlags["skipoffline"] {
+		*skipOffline = v == "true" || v == "1"
 	}
 
 	if *versionFlag {

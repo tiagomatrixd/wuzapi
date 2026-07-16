@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -39,6 +40,11 @@ type MyClient struct {
 	db                        *sqlx.DB
 	appStateRecoveryLock      sync.Mutex
 	appStateFullSyncAttempted map[appstate.WAPatchName]time.Time
+	// Offline-backlog window tracking for -skipoffline: connectedAt holds the
+	// unix time of the last Connected event and offlineSyncDone flips true once
+	// the server finishes flushing the offline queue (OfflineSyncCompleted).
+	connectedAt     atomic.Int64
+	offlineSyncDone atomic.Bool
 }
 
 // addSessionInfo adds the connected session information to the postmap
@@ -1001,6 +1007,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 		mycli.handleWAAppStateSyncError(evt)
 		return false
 	case *events.Connected, *events.PushNameSetting:
+		if _, isConnected := rawEvt.(*events.Connected); isConnected {
+			// Open a new offline-backlog window: until the server signals
+			// OfflineSyncCompleted, messages older than this instant are backlog.
+			mycli.connectedAt.Store(time.Now().Unix())
+			mycli.offlineSyncDone.Store(false)
+		}
 		postmap["type"] = "Connected"
 		dowebhook = 1
 		// Add session info
@@ -1098,6 +1110,22 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 		log.Info().Msg("Received StreamReplaced event")
 		return false
 	case *events.Message:
+		// With -skipoffline, drop the offline backlog the server flushes right
+		// after connecting: between Connected and OfflineSyncCompleted, any
+		// message whose server timestamp predates the connection is queued
+		// history, not a real-time message. Returning true still acks it, so
+		// the server marks it delivered and won't re-flush it next reconnect.
+		// The 10s slack absorbs clock skew between this host and WhatsApp.
+		if *skipOffline && !mycli.offlineSyncDone.Load() {
+			if connectedAt := mycli.connectedAt.Load(); connectedAt > 0 && evt.Info.Timestamp.Unix() < connectedAt-10 {
+				log.Info().
+					Str("userid", mycli.userID).
+					Str("messageID", evt.Info.ID).
+					Time("messageTimestamp", evt.Info.Timestamp).
+					Msg("Skipping offline backlog message (-skipoffline)")
+				return true
+			}
+		}
 		// Process message asynchronously to avoid blocking the event handler
 		go mycli.processMessageAsync(evt)
 		return true
@@ -1113,7 +1141,8 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 			Msg("Server sent number of events that were missed during downtime")
 		return true
 	case *events.OfflineSyncCompleted:
-		log.Info().Int("evt_count", evt.Count).Msg("Offline sync completed")
+		mycli.offlineSyncDone.Store(true)
+		log.Info().Int("evt_count", evt.Count).Str("userid", mycli.userID).Msg("Offline sync completed")
 		return true
 	case *events.KeepAliveTimeout:
 		log.Warn().Msg("Keepalive timeout from WhatsApp websocket")
