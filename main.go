@@ -88,6 +88,12 @@ func init() {
 	if v := os.Getenv("WUZAPI_SKIPOFFLINE"); v != "" && !setFlags["skipoffline"] {
 		*skipOffline = v == "true" || v == "1"
 	}
+	// Loud one-time confirmation so a deploy can be verified from the boot log:
+	// if this line is missing, the running image does not have the feature or
+	// the env var/flag did not reach the process.
+	if *skipOffline {
+		log.Info().Msg("skipoffline ENABLED: offline message backlog will be discarded on connect, only real-time messages are processed")
+	}
 
 	if *versionFlag {
 		fmt.Printf("WuzAPI version %s\n", version)

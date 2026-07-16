@@ -45,6 +45,7 @@ type MyClient struct {
 	// the server finishes flushing the offline queue (OfflineSyncCompleted).
 	connectedAt     atomic.Int64
 	offlineSyncDone atomic.Bool
+	skippedOffline  atomic.Int64
 }
 
 // addSessionInfo adds the connected session information to the postmap
@@ -577,6 +578,11 @@ func (s *server) connectOnStartup() {
 			log.Info().Str("events", eventstring).Str("jid", jid).Msg("Attempt to connect")
 			killchannel[txtid] = make(chan bool)
 			go s.startClient(txtid, jid, token, subscribedEvents)
+			// Stagger session startups. Launching hundreds of sessions in the
+			// same instant stampedes Postgres (device fetch per session) and the
+			// WhatsApp servers (simultaneous logins + offline flushes), which is
+			// what made the whole service sluggish right after a restart.
+			time.Sleep(100 * time.Millisecond)
 
 			// Initialize S3 client if configured
 			go func(userID string) {
@@ -1040,23 +1046,13 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 			log.Error().Str("userid", mycli.userID).Msg("Could not set active mode after retries; session may not receive messages")
 		}()
 
-		// Hydrate the participating groups right after connecting. The w:g2
-		// "participating" query (GetJoinedGroups) establishes this device's group
-		// session state on the server, which is what makes group messages start
-		// being delivered to it. Without this, a freshly (re)connected companion
-		// device can send and list groups but silently never RECEIVES group
-		// messages (DMs may still work). This keeps the device invisible — it does
-		// not touch presence. Runs in the background so it doesn't block event
-		// handling. Mirrors the groupFetchAllParticipating-on-connect fix used by
-		// other whatsmeow/Baileys-based clients.
-		go func() {
-			groups, err := mycli.WAClient.GetJoinedGroups(context.Background())
-			if err != nil {
-				log.Warn().Err(err).Str("userid", mycli.userID).Msg("Failed to hydrate participating groups on connect")
-				return
-			}
-			log.Info().Int("groups", len(groups)).Str("userid", mycli.userID).Msg("Hydrated participating groups on connect")
-		}()
+		// NOTE: a previous fix hydrated groups here via GetJoinedGroups on every
+		// Connected event. That was removed: whatsmeow persists LID mappings and
+		// redacted phones for EVERY participant of EVERY group on that call, so a
+		// server restart (hundreds of sessions reconnecting at once, some with
+		// hundreds of groups) hammered Postgres and made startup crawl — and it
+		// did not fix message delivery (SetForceActiveDeliveryReceipts is the fix
+		// that matters for that).
 
 		if len(mycli.WAClient.Store.PushName) == 0 {
 			break
@@ -1118,11 +1114,15 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 		// The 10s slack absorbs clock skew between this host and WhatsApp.
 		if *skipOffline && !mycli.offlineSyncDone.Load() {
 			if connectedAt := mycli.connectedAt.Load(); connectedAt > 0 && evt.Info.Timestamp.Unix() < connectedAt-10 {
-				log.Info().
-					Str("userid", mycli.userID).
-					Str("messageID", evt.Info.ID).
-					Time("messageTimestamp", evt.Info.Timestamp).
-					Msg("Skipping offline backlog message (-skipoffline)")
+				skipped := mycli.skippedOffline.Add(1)
+				if skipped <= 5 || skipped%100 == 0 {
+					log.Info().
+						Str("userid", mycli.userID).
+						Str("messageID", evt.Info.ID).
+						Time("messageTimestamp", evt.Info.Timestamp).
+						Int64("skippedSoFar", skipped).
+						Msg("Skipping offline backlog message (-skipoffline)")
+				}
 				return true
 			}
 		}
@@ -1142,7 +1142,8 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 		return true
 	case *events.OfflineSyncCompleted:
 		mycli.offlineSyncDone.Store(true)
-		log.Info().Int("evt_count", evt.Count).Str("userid", mycli.userID).Msg("Offline sync completed")
+		skipped := mycli.skippedOffline.Swap(0)
+		log.Info().Int("evt_count", evt.Count).Int64("skipped_messages", skipped).Str("userid", mycli.userID).Msg("Offline sync completed")
 		return true
 	case *events.KeepAliveTimeout:
 		log.Warn().Msg("Keepalive timeout from WhatsApp websocket")
