@@ -23,6 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY go.mod go.sum ./
+# go.mod replaces go.mau.fi/whatsmeow with this local patched copy, so it must
+# be present before `go mod download` resolves the module graph
+COPY whatsmeow/ ./whatsmeow/
 
 # Download com retry e verificação
 RUN go mod download && go mod verify

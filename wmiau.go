@@ -1161,6 +1161,18 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 		log.Info().Msg("Received StreamReplaced event")
 		return false
 	case *events.Message:
+		// Channels (newsletters) and status/stories are noise for bot sessions:
+		// drop them for ALL sessions before any processing. Returning true still
+		// acks them, so they get cleared from the server-side offline queue
+		// instead of being redelivered forever.
+		if evt.Info.Chat.Server == types.NewsletterServer || evt.Info.Chat == types.StatusBroadcastJID {
+			log.Debug().
+				Str("userid", mycli.userID).
+				Str("chat", evt.Info.Chat.String()).
+				Str("messageID", evt.Info.ID).
+				Msg("Ignoring channel/status broadcast message")
+			return true
+		}
 		// With -skipoffline, drop the offline backlog the server flushes right
 		// after connecting: between Connected and OfflineSyncCompleted, any
 		// message whose server timestamp predates the connection is queued

@@ -67,3 +67,5 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
+
+replace go.mau.fi/whatsmeow => ./whatsmeow
