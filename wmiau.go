@@ -46,6 +46,11 @@ type MyClient struct {
 	connectedAt     atomic.Int64
 	offlineSyncDone atomic.Bool
 	skippedOffline  atomic.Int64
+	// Offline flush watchdog state: offlinePreviewAt is when the server
+	// announced a pending offline backlog (0 = none pending) and
+	// lastFlushReconnect is when the watchdog last forced a reconnect.
+	offlinePreviewAt   atomic.Int64
+	lastFlushReconnect atomic.Int64
 }
 
 // addSessionInfo adds the connected session information to the postmap
@@ -415,6 +420,55 @@ func (s *server) startWakeupScheduler() {
 	for range ticker.C {
 		s.wakeupAllSessions()
 		s.purgeOldMessageSecrets()
+	}
+}
+
+// startOfflineFlushWatchdog recovers sessions whose offline backlog flush
+// stalls. Symptom (seen live on heavy accounts): the server announces the
+// backlog (<ib><offline_preview count="N">), pushes a handful of nodes and
+// then stops sending — the session looks connected, sends fine, but never
+// receives the pending nor new messages, and OfflineSyncCompleted never
+// arrives. A disconnect+connect reliably restarts the server-side flush, so
+// this loop watches for a preview without a completion within
+// offlineFlushTimeout and forces exactly that, with a cooldown so a genuinely
+// slow flush isn't hammered.
+func (s *server) startOfflineFlushWatchdog() {
+	const (
+		checkInterval       = 60 * time.Second
+		offlineFlushTimeout = 3 * time.Minute
+		reconnectCooldown   = 10 * time.Minute
+	)
+	log.Info().Msg("Starting offline flush watchdog")
+	for range time.Tick(checkInterval) {
+		now := time.Now().Unix()
+		for userID, mycli := range clientManager.ListMyClients() {
+			previewAt := mycli.offlinePreviewAt.Load()
+			if previewAt == 0 || now-previewAt < int64(offlineFlushTimeout/time.Second) {
+				continue
+			}
+			if now-mycli.lastFlushReconnect.Load() < int64(reconnectCooldown/time.Second) {
+				continue
+			}
+			client := mycli.WAClient
+			if client == nil || !client.IsConnected() || !client.IsLoggedIn() {
+				continue
+			}
+			mycli.lastFlushReconnect.Store(now)
+			mycli.offlinePreviewAt.Store(0)
+			log.Warn().
+				Str("userid", userID).
+				Time("preview_at", time.Unix(previewAt, 0)).
+				Msg("Offline flush stalled (no OfflineSyncCompleted), forcing reconnect")
+			go func(c *whatsmeow.Client, uid string) {
+				c.Disconnect()
+				time.Sleep(3 * time.Second)
+				if err := c.Connect(); err != nil {
+					log.Error().Err(err).Str("userid", uid).Msg("Watchdog reconnect failed")
+				} else {
+					log.Info().Str("userid", uid).Msg("Watchdog reconnect issued after stalled offline flush")
+				}
+			}(client, userID)
+		}
 	}
 }
 
@@ -1018,6 +1072,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 			// OfflineSyncCompleted, messages older than this instant are backlog.
 			mycli.connectedAt.Store(time.Now().Unix())
 			mycli.offlineSyncDone.Store(false)
+			mycli.offlinePreviewAt.Store(0)
 		}
 		postmap["type"] = "Connected"
 		dowebhook = 1
@@ -1133,15 +1188,18 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) bool {
 		log.Info().Str("index", fmt.Sprintf("%+v", evt.Index)).Str("actionValue", fmt.Sprintf("%+v", evt.SyncActionValue)).Msg("App state event received")
 		return true
 	case *events.OfflineSyncPreview:
+		mycli.offlinePreviewAt.Store(time.Now().Unix())
 		log.Info().
 			Int("message_count", evt.Messages).
 			Int("receipt_count", evt.Receipts).
 			Int("notification_count", evt.Notifications).
 			Int("app_data_change_count", evt.AppDataChanges).
+			Str("userid", mycli.userID).
 			Msg("Server sent number of events that were missed during downtime")
 		return true
 	case *events.OfflineSyncCompleted:
 		mycli.offlineSyncDone.Store(true)
+		mycli.offlinePreviewAt.Store(0)
 		skipped := mycli.skippedOffline.Swap(0)
 		log.Info().Int("evt_count", evt.Count).Int64("skipped_messages", skipped).Str("userid", mycli.userID).Msg("Offline sync completed")
 		return true

@@ -267,6 +267,9 @@ func main() {
 		log.Info().Msg("Session wake-up scheduler is disabled")
 	}
 
+	// Recover sessions whose offline backlog flush stalls after connecting
+	go s.startOfflineFlushWatchdog()
+
 	srv := &http.Server{
 		Addr:              *address + ":" + *port,
 		Handler:           s.router,

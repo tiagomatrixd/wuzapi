@@ -76,6 +76,17 @@ func (cm *ClientManager) DeleteMyClient(userID string) {
 	delete(cm.myClients, userID)
 }
 
+// ListMyClients returns a snapshot of all registered MyClients keyed by userID.
+func (cm *ClientManager) ListMyClients() map[string]*MyClient {
+	cm.RLock()
+	defer cm.RUnlock()
+	snapshot := make(map[string]*MyClient, len(cm.myClients))
+	for userID, client := range cm.myClients {
+		snapshot[userID] = client
+	}
+	return snapshot
+}
+
 // UpdateMyClientSubscriptions updates the event subscriptions of a client without reconnecting
 func (cm *ClientManager) UpdateMyClientSubscriptions(userID string, subscriptions []string) {
 	cm.Lock()
