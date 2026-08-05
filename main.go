@@ -69,7 +69,12 @@ func init() {
 		log.Warn().Err(err).Msg("It was not possible to load the .env file (it may not exist).")
 	}
 
-	flag.Parse()
+	// init() runs before the testing package registers its own -test.* flags,
+	// so parsing here under `go test` makes the test binary reject them and
+	// abort before a single test runs. Production behaviour is unchanged.
+	if !runningUnderGoTest() {
+		flag.Parse()
+	}
 
 	// Env-var fallback for flags not explicitly set on the command line.
 	// This lets deployments (Docker/EasyPanel) configure via WUZAPI_* env vars

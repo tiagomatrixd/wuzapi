@@ -763,6 +763,8 @@ func (s *server) SendDocument() http.HandlerFunc {
 
 		caption := r.FormValue("Caption")
 		mimeType := r.FormValue("MimeType")
+		// MediaRef arrives as a JSON string: multipart has no nested objects.
+		mediaRef := parseMediaRefJSON(r.FormValue("MediaRef"))
 		msgid := r.FormValue("Id")
 		stanzaID := r.FormValue("StanzaID")
 		participant := r.FormValue("Participant")
@@ -799,36 +801,51 @@ func (s *server) SendDocument() http.HandlerFunc {
 			return
 		}
 
-		// Get and validate file
-		file, handler, err := r.FormFile("Document")
-		if err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Document in form data"))
-			return
-		}
-		defer file.Close()
+		var uploaded whatsmeow.UploadResponse
+		var fileLength uint64
 
-		const maxFileSize = 200 * 1024 * 1024
-		if handler.Size > maxFileSize {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("file too large, maximum size is 200MB"))
-			return
-		}
+		if mediaRef.IsComplete() {
+			// Re-send of a file already on WhatsApp's servers: no file needed.
+			uploaded = mediaRef.UploadResponse()
+			fileLength = mediaRef.FileLength
+			if mimeType == "" {
+				mimeType = mediaRef.Mimetype
+			}
+			log.Info().Str("filename", fileName).Msg("sending document from cached MediaRef, skipping upload")
+		} else {
+			// Get and validate file
+			file, handler, err := r.FormFile("Document")
+			if err != nil {
+				s.Respond(w, r, http.StatusBadRequest, errors.New("missing Document in form data"))
+				return
+			}
+			defer file.Close()
 
-		// Read file data
-		fileData, err := io.ReadAll(file)
-		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to read file: %w", err))
-			return
-		}
+			const maxFileSize = 200 * 1024 * 1024
+			if handler.Size > maxFileSize {
+				s.Respond(w, r, http.StatusBadRequest, errors.New("file too large, maximum size is 200MB"))
+				return
+			}
 
-		if mimeType == "" {
-			mimeType = http.DetectContentType(fileData)
-		}
+			// Read file data
+			fileData, err := io.ReadAll(file)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to read file: %w", err))
+				return
+			}
 
-		// Upload file
-		uploaded, err := client.Upload(context.Background(), fileData, whatsmeow.MediaDocument)
-		if err != nil {
-			s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
-			return
+			if mimeType == "" {
+				mimeType = http.DetectContentType(fileData)
+			}
+
+			// Upload file
+			uploaded, err = client.Upload(context.Background(), fileData, whatsmeow.MediaDocument)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
+				return
+			}
+			fileLength = uint64(handler.Size)
+			mediaRef = newMediaRef(uploaded, fileLength, mimeType, nil)
 		}
 
 		// Build and send message
@@ -841,7 +858,7 @@ func (s *server) SendDocument() http.HandlerFunc {
 				Mimetype:      proto.String(mimeType),
 				FileEncSHA256: uploaded.FileEncSHA256,
 				FileSHA256:    uploaded.FileSHA256,
-				FileLength:    proto.Uint64(uint64(handler.Size)),
+				FileLength:    proto.Uint64(fileLength),
 				Caption:       proto.String(caption),
 			},
 		}
@@ -872,11 +889,7 @@ func (s *server) SendDocument() http.HandlerFunc {
 
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("message sent")
 
-		response := map[string]interface{}{
-			"Details":   "Sent",
-			"Timestamp": resp.Timestamp.Unix(),
-			"Id":        msgid,
-		}
+		response := sentResponse(msgid, resp.Timestamp.Unix(), mediaRef)
 
 		responseJson, err := json.Marshal(response)
 		if err != nil {
@@ -899,6 +912,7 @@ func (s *server) SendAudio() http.HandlerFunc {
 		Id          string
 		PTT         *bool  `json:"ptt,omitempty"`
 		MimeType    string `json:"mimetype,omitempty"`
+		MediaRef    *MediaRef
 		ContextInfo waE2E.ContextInfo
 	}
 
@@ -927,7 +941,7 @@ func (s *server) SendAudio() http.HandlerFunc {
 			return
 		}
 
-		if t.Audio == "" {
+		if t.Audio == "" && !t.MediaRef.IsComplete() {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Audio in Payload"))
 			return
 		}
@@ -947,8 +961,15 @@ func (s *server) SendAudio() http.HandlerFunc {
 
 		var uploaded whatsmeow.UploadResponse
 		var filedata []byte
+		var fileLength uint64
+		mediaRef := t.MediaRef
 
-		if strings.HasPrefix(t.Audio, "data:audio/") {
+		if mediaRef.IsComplete() {
+			// Same audio already uploaded before: reuse it and skip the upload.
+			uploaded = mediaRef.UploadResponse()
+			fileLength = mediaRef.FileLength
+			log.Info().Str("id", msgid).Msg("sending audio from cached MediaRef, skipping upload")
+		} else if strings.HasPrefix(t.Audio, "data:audio/") {
 			var dataURL, err = dataurl.DecodeString(t.Audio)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode base64 encoded data from payload"))
@@ -960,6 +981,7 @@ func (s *server) SendAudio() http.HandlerFunc {
 					s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
 					return
 				}
+				fileLength = uint64(len(filedata))
 			}
 		} else {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("audio data should start with \"data:audio/\""))
@@ -976,6 +998,8 @@ func (s *server) SendAudio() http.HandlerFunc {
 		var mime string
 		if t.MimeType != "" {
 			mime = t.MimeType
+		} else if mediaRef.IsComplete() && mediaRef.Mimetype != "" {
+			mime = mediaRef.Mimetype
 		} else {
 			// Default MIME types based on PTT setting
 			if ptt {
@@ -992,9 +1016,13 @@ func (s *server) SendAudio() http.HandlerFunc {
 			Mimetype:      &mime,
 			FileEncSHA256: uploaded.FileEncSHA256,
 			FileSHA256:    uploaded.FileSHA256,
-			FileLength:    proto.Uint64(uint64(len(filedata))),
+			FileLength:    proto.Uint64(fileLength),
 			PTT:           &ptt,
 		}}
+
+		if !mediaRef.IsComplete() {
+			mediaRef = newMediaRef(uploaded, fileLength, mime, nil)
+		}
 
 		if t.ContextInfo.StanzaID != nil {
 			if msg.AudioMessage.ContextInfo == nil {
@@ -1019,7 +1047,7 @@ func (s *server) SendAudio() http.HandlerFunc {
 		}
 
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
-		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp.Unix(), "Id": msgid}
+		response := sentResponse(msgid, resp.Timestamp.Unix(), mediaRef)
 		responseJson, err := json.Marshal(response)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, err)
@@ -1038,6 +1066,7 @@ func (s *server) SendImage() http.HandlerFunc {
 		Caption     string
 		Id          string
 		MimeType    string
+		MediaRef    *MediaRef
 		ContextInfo waE2E.ContextInfo
 	}
 
@@ -1066,7 +1095,7 @@ func (s *server) SendImage() http.HandlerFunc {
 			return
 		}
 
-		if t.Image == "" {
+		if t.Image == "" && !t.MediaRef.IsComplete() {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Image in Payload"))
 			return
 		}
@@ -1088,7 +1117,17 @@ func (s *server) SendImage() http.HandlerFunc {
 		var filedata []byte
 		var thumbnailBytes []byte
 
-		if strings.HasPrefix(t.Image, "data:image") {
+		var fileLength uint64
+		mediaRef := t.MediaRef
+
+		if mediaRef.IsComplete() {
+			// Image already on WhatsApp's servers: reuse it, thumbnail included
+			// (regenerating it would need the original bytes we no longer have).
+			uploaded = mediaRef.UploadResponse()
+			fileLength = mediaRef.FileLength
+			thumbnailBytes = mediaRef.JPEGThumbnail
+			log.Info().Str("id", msgid).Msg("sending image from cached MediaRef, skipping upload")
+		} else if strings.HasPrefix(t.Image, "data:image") {
 			var dataURL, err = dataurl.DecodeString(t.Image)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode base64 encoded data from payload"))
@@ -1100,6 +1139,7 @@ func (s *server) SendImage() http.HandlerFunc {
 					s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
 					return
 				}
+				fileLength = uint64(len(filedata))
 			}
 
 			// decode jpeg into image.Image
@@ -1149,13 +1189,20 @@ func (s *server) SendImage() http.HandlerFunc {
 				if t.MimeType != "" {
 					return t.MimeType
 				}
+				if mediaRef.IsComplete() && mediaRef.Mimetype != "" {
+					return mediaRef.Mimetype
+				}
 				return http.DetectContentType(filedata)
 			}()),
 			FileEncSHA256: uploaded.FileEncSHA256,
 			FileSHA256:    uploaded.FileSHA256,
-			FileLength:    proto.Uint64(uint64(len(filedata))),
+			FileLength:    proto.Uint64(fileLength),
 			JPEGThumbnail: thumbnailBytes,
 		}}
+
+		if !mediaRef.IsComplete() {
+			mediaRef = newMediaRef(uploaded, fileLength, msg.ImageMessage.GetMimetype(), thumbnailBytes)
+		}
 
 		if t.ContextInfo.StanzaID != nil {
 			if msg.ImageMessage.ContextInfo == nil {
@@ -1181,7 +1228,7 @@ func (s *server) SendImage() http.HandlerFunc {
 		}
 
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
-		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp.Unix(), "Id": msgid}
+		response := sentResponse(msgid, resp.Timestamp.Unix(), mediaRef)
 		responseJson, err := json.Marshal(response)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, err)
@@ -1327,6 +1374,7 @@ func (s *server) SendVideo() http.HandlerFunc {
 		JPEGThumbnail []byte
 		GifPlayback   bool
 		MimeType      string
+		MediaRef      *MediaRef
 		ContextInfo   waE2E.ContextInfo
 	}
 
@@ -1355,7 +1403,7 @@ func (s *server) SendVideo() http.HandlerFunc {
 			return
 		}
 
-		if t.Video == "" {
+		if t.Video == "" && !t.MediaRef.IsComplete() {
 			s.Respond(w, r, http.StatusBadRequest, errors.New("missing Video in Payload"))
 			return
 		}
@@ -1377,7 +1425,21 @@ func (s *server) SendVideo() http.HandlerFunc {
 		var filedata []byte
 		var thumbnailBytes []byte
 
-		if strings.HasPrefix(t.Video, "data") {
+		var fileLength uint64
+		mediaRef := t.MediaRef
+
+		if mediaRef.IsComplete() {
+			// Video already on WhatsApp's servers. Reusing the cached thumbnail
+			// also skips the ffmpeg frame extraction, which is the other
+			// expensive step in this handler.
+			uploaded = mediaRef.UploadResponse()
+			fileLength = mediaRef.FileLength
+			thumbnailBytes = mediaRef.JPEGThumbnail
+			if len(t.JPEGThumbnail) > 0 {
+				thumbnailBytes = t.JPEGThumbnail
+			}
+			log.Info().Str("id", msgid).Msg("sending video from cached MediaRef, skipping upload")
+		} else if strings.HasPrefix(t.Video, "data") {
 			var dataURL, err = dataurl.DecodeString(t.Video)
 			if err != nil {
 				s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode base64 encoded data from payload"))
@@ -1389,6 +1451,7 @@ func (s *server) SendVideo() http.HandlerFunc {
 					s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload file: %w", err))
 					return
 				}
+				fileLength = uint64(len(filedata))
 			}
 
 			// Generate thumbnail for video using ffmpeg
@@ -1443,14 +1506,21 @@ func (s *server) SendVideo() http.HandlerFunc {
 				if t.MimeType != "" {
 					return t.MimeType
 				}
+				if mediaRef.IsComplete() && mediaRef.Mimetype != "" {
+					return mediaRef.Mimetype
+				}
 				return http.DetectContentType(filedata)
 			}()),
 			FileEncSHA256: uploaded.FileEncSHA256,
 			FileSHA256:    uploaded.FileSHA256,
-			FileLength:    proto.Uint64(uint64(len(filedata))),
+			FileLength:    proto.Uint64(fileLength),
 			JPEGThumbnail: thumbnailBytes,
 			GifPlayback:   proto.Bool(t.GifPlayback),
 		}}
+
+		if !mediaRef.IsComplete() {
+			mediaRef = newMediaRef(uploaded, fileLength, msg.VideoMessage.GetMimetype(), thumbnailBytes)
+		}
 
 		if t.ContextInfo.StanzaID != nil {
 			if msg.VideoMessage.ContextInfo == nil {
@@ -1475,7 +1545,7 @@ func (s *server) SendVideo() http.HandlerFunc {
 		}
 
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
-		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp.Unix(), "Id": msgid}
+		response := sentResponse(msgid, resp.Timestamp.Unix(), mediaRef)
 		responseJson, err := json.Marshal(response)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, err)
