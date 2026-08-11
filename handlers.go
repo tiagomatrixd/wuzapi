@@ -2389,24 +2389,20 @@ func (s *server) SendInteractiveMessage() http.HandlerFunc {
 		payloadJSON, _ := json.Marshal(payload)
 		log.Info().Str("msgid", msgid).Str("recipient", recipient.String()).Str("payload", string(payloadJSON)).Msg("Attempting to send interactive message")
 
-		// Convert JSON nodes to waBinary.Node format
-		var additionalNodes []waBinary.Node
-
+		// additionalNodes is accepted for backwards compatibility but ignored: hypermeow
+		// builds the <biz> native_flow node itself (buildNativeFlowBizNode in send.go), with
+		// the current v="9", quality_control and a name derived from the actual buttons.
+		// Passing our own would put a second <biz> in the stanza and break the buttons.
 		if len(payload.AdditionalNodes) > 0 {
-			// Use nodes from request
-			additionalNodes = convertJSONNodesToBinary(payload.AdditionalNodes)
-		} else {
-
+			log.Debug().Str("msgid", msgid).Msg("Ignoring additionalNodes; hypermeow builds the biz node")
 		}
 
-		// Send the message with additional nodes
 		resp, err := clientManager.GetWhatsmeowClient(txtid).SendMessage(
 			context.Background(),
 			recipient,
 			msg,
 			whatsmeow.SendRequestExtra{
-				ID:              msgid,
-				AdditionalNodes: &additionalNodes,
+				ID: msgid,
 			},
 		)
 
