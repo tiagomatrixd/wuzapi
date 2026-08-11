@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog/log"
-	whatsmeow "github.com/polymorfa/hypermeow"
+	"go.mau.fi/whatsmeow"
 )
 
 // runningUnderGoTest reports whether this binary is a `go test` build, which

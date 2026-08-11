@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	whatsmeow "github.com/polymorfa/hypermeow"
+	"go.mau.fi/whatsmeow"
 )
 
 func completeRef() *MediaRef {

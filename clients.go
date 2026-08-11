@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/go-resty/resty/v2"
-	whatsmeow "github.com/polymorfa/hypermeow"
+	"go.mau.fi/whatsmeow"
 )
 
 type ClientManager struct {
