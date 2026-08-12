@@ -1,0 +1,250 @@
+@import 'tailwindcss';
+
+@import '@fontsource-variable/space-grotesk';
+@import '@fontsource-variable/jetbrains-mono';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  Palette rules for this console:
+  - emerald / amber / rose are RESERVED for session status. Never decorative.
+  - `accent` (periwinkle) is the only interactive colour: links, primary buttons,
+    focus rings. It sits far from every status hue so the two never get confused.
+*/
+:root {
+  --bg: #f7f8fa;
+  --bg-sunk: #eef0f4;
+  --surface: #ffffff;
+  --surface-2: #f2f4f7;
+  --line: #e0e4ea;
+  --line-strong: #cdd3dc;
+
+  --text: #10151c;
+  --text-muted: #5d6b7d;
+  --text-faint: #8a97a8;
+
+  --accent: #4f5bd5;
+  --accent-hover: #414ac0;
+  --accent-contrast: #ffffff;
+  --accent-soft: #eceefc;
+
+  --up: #0f9d63;
+  --up-soft: #e2f6ed;
+  --pairing: #b7791f;
+  --pairing-soft: #fdf3e0;
+  --down: #d64545;
+  --down-soft: #fdeaea;
+
+  --shadow-card: 0 1px 2px rgb(16 21 28 / 0.05), 0 1px 3px rgb(16 21 28 / 0.06);
+  --shadow-pop: 0 12px 32px -8px rgb(16 21 28 / 0.18), 0 2px 8px rgb(16 21 28 / 0.08);
+}
+
+.dark {
+  --bg: #0b0f14;
+  --bg-sunk: #070a0e;
+  --surface: #131a22;
+  --surface-2: #182029;
+  --line: #232e3a;
+  --line-strong: #33414f;
+
+  --text: #e6edf3;
+  --text-muted: #8b9aab;
+  --text-faint: #64748b;
+
+  --accent: #7a8cff;
+  --accent-hover: #93a2ff;
+  --accent-contrast: #0b0f14;
+  --accent-soft: #1b2140;
+
+  --up: #34d399;
+  --up-soft: #0e2b22;
+  --pairing: #fbbf24;
+  --pairing-soft: #2e2410;
+  --down: #f87171;
+  --down-soft: #2e1618;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-pop: 0 16px 40px -12px rgb(0 0 0 / 0.65), 0 2px 8px rgb(0 0 0 / 0.4);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-sunk: var(--bg-sunk);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-up: var(--up);
+  --color-up-soft: var(--up-soft);
+  --color-pairing: var(--pairing);
+  --color-pairing-soft: var(--pairing-soft);
+  --color-down: var(--down);
+  --color-down-soft: var(--down-soft);
+
+  --font-display: 'Space Grotesk Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --shadow-card: var(--shadow-card);
+  --shadow-pop: var(--shadow-pop);
+}
+
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv01', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overscroll-behavior-y: none;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  /* Tabular figures everywhere a number can change under polling, so the
+     layout never jitters between refreshes. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-contrast);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border-radius: 99px;
+    border: 3px solid var(--bg);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-faint);
+  }
+}
+
+@layer utilities {
+  /* QR codes must never be smoothed: interpolation blurs the module edges and
+     the camera stops resolving them. Keep every pixel hard. */
+  .qr-crisp {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  /* The one piece of ambient motion in the app: a slow halo on sessions that
+     are actually live. It is the fastest way to read "this thing is breathing". */
+  .pulse-ring::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 9999px;
+    border: 1px solid currentColor;
+    opacity: 0;
+    animation: pulse-ring 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes pulse-ring {
+    0% {
+      transform: scale(0.7);
+      opacity: 0.7;
+    }
+    70%,
+    100% {
+      transform: scale(1.5);
+      opacity: 0;
+    }
+  }
+
+  .animate-in {
+    animation: fade-up 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .animate-scale-in {
+    animation: scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97) translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .animate-spin-slow {
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

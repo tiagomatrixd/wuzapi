@@ -28,6 +28,7 @@ Be very careful—do not use this to send SPAM or anything similar. Use at your 
 
 **Optional:**
 * Docker (for containerization)
+* Node.js 20+ (only to rebuild the dashboard — the compiled bundle is committed)
 
 ## Updating dependencies
 
@@ -43,6 +44,26 @@ go mod tidy
 ```
 go build .
 ```
+
+### Dashboard
+
+The management dashboard at `/dashboard` is a Vite + React + Tailwind app living in
+`dashboard-src/`. Its compiled output is committed to `static/dashboard/`, so
+`go build .` alone produces a working server and **Node is not required** unless you
+change the dashboard.
+
+```bash
+cd dashboard-src
+npm install
+npm run build     # writes to ../static/dashboard
+```
+
+For UI work, `npm run dev` serves the dashboard on port 5173 with hot reload and
+proxies the API to `http://localhost:8080` (override with the `WUZAPI_URL` env var).
+
+The Docker build compiles the dashboard in its own stage, so images always ship
+assets matching the commit. The previous jQuery/Fomantic dashboard is still
+available at `/dashboard-legacy` as a fallback.
 
 ## Run
 

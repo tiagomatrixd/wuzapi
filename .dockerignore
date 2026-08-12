@@ -18,6 +18,10 @@ wuzapi
 *.o
 *.out
 
+# Node dependencies — the dashboard stage installs them from the lockfile
+node_modules/
+dashboard-src/node_modules/
+
 # Documentation
 README.md
 API.md

@@ -1,4 +1,17 @@
 
+# Dashboard (Vite + React) is compiled first so the Go image always ships the
+# assets that match this commit, regardless of what is checked into static/.
+FROM node:22-alpine AS dashboard
+
+WORKDIR /app/dashboard-src
+
+COPY dashboard-src/package.json dashboard-src/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY dashboard-src/ ./
+# vite.config.ts writes to ../static/dashboard, i.e. /app/static/dashboard
+RUN npm run build
+
 FROM golang:latest as builder
 
 # Configurar proxy do Go para evitar problemas de rede
@@ -56,9 +69,11 @@ ENV TZ="America/Sao_Paulo"
 
 WORKDIR /app
 
-COPY --from=builder /app/wuzapi         /app/
-COPY --from=builder /app/static         /app/static/
-COPY --from=builder /app/wuzapi.service /app/wuzapi.service
+COPY --from=builder   /app/wuzapi           /app/
+COPY --from=builder   /app/static           /app/static/
+# Overwrite the checked-in dashboard bundle with the one just compiled
+COPY --from=dashboard /app/static/dashboard /app/static/dashboard/
+COPY --from=builder   /app/wuzapi.service   /app/wuzapi.service
 
 RUN chmod +x /app/wuzapi && \
     chmod -R 755 /app && \
