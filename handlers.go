@@ -33,6 +33,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waE2E"
 
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -1386,6 +1387,26 @@ func (s *server) SendSticker() http.HandlerFunc {
 			stk.Height = proto.Uint32(512)
 			stk.IsAnimated = proto.Bool(true)
 			stk.StickerSentTS = proto.Int64(time.Now().UnixMilli())
+			stk.MediaKeyTimestamp = proto.Int64(time.Now().Unix())
+
+			// Sem isto a figurinha chega com o ícone de som, mas o app mostra "não
+			// foi possível reproduzir o som". Cada mídia aninhada leva em
+			// contextInfo.mediaDomainInfo (74) o domínio E2EE + a própria mediaKey;
+			// o sticker leva ainda o campo 82 = varint 13001 (campo novo, ausente
+			// no nosso proto — vai cru como campo desconhecido). Formato copiado de
+			// uma implementação Baileys que toca o som.
+			if stk.ContextInfo == nil {
+				stk.ContextInfo = &waE2E.ContextInfo{}
+			}
+			stk.ContextInfo.MediaDomainInfo = &waE2E.MediaDomainInfo{
+				MediaKeyDomain: waE2E.MediaKeyDomain_MEDIA_KEY_DOMAIN_E2EE.Enum(),
+				E2EeMediaKey:   uploaded.MediaKey,
+			}
+			field82 := protowire.AppendTag(nil, 82, protowire.BytesType)
+			field82 = protowire.AppendBytes(field82, protowire.AppendVarint(nil, 13001))
+			stkCtx := stk.ContextInfo.ProtoReflect()
+			stkCtx.SetUnknown(append(stkCtx.GetUnknown(), field82...))
+
 			stk.Audio = &waE2E.StickerMessage_AudioMessage{AudioMessage: &waE2E.AudioMessage{
 				URL:               proto.String(audioUp.URL),
 				DirectPath:        proto.String(audioUp.DirectPath),
@@ -1396,6 +1417,12 @@ func (s *server) SendSticker() http.HandlerFunc {
 				FileLength:        proto.Uint64(uint64(len(audioURL.Data))),
 				MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
 				Seconds:           proto.Uint32(seconds),
+				ContextInfo: &waE2E.ContextInfo{
+					MediaDomainInfo: &waE2E.MediaDomainInfo{
+						MediaKeyDomain: waE2E.MediaKeyDomain_MEDIA_KEY_DOMAIN_E2EE.Enum(),
+						E2EeMediaKey:   audioUp.MediaKey,
+					},
+				},
 			}}
 
 			// Formato do app Android: o secret fica só na mensagem externa e o
