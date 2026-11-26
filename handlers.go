@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	cryptorand "crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1247,7 +1248,13 @@ func (s *server) SendSticker() http.HandlerFunc {
 		Id           string
 		PngThumbnail []byte
 		MimeType     string
-		ContextInfo  waE2E.ContextInfo
+		// Figurinha com som (opcionais): Audio é um data URL de OGG/Opus. O WebP
+		// precisa ser animado (VP8X) e trazer "sound-sha256" do áudio no EXIF —
+		// é por esse hash que o app de quem recebe junta os dois.
+		Audio         string
+		AudioSeconds  uint32
+		AudioMimeType string
+		ContextInfo   waE2E.ContextInfo
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -1329,10 +1336,11 @@ func (s *server) SendSticker() http.HandlerFunc {
 			FileLength:    proto.Uint64(uint64(len(filedata))),
 			PngThumbnail:  t.PngThumbnail,
 		}}
+		stk := msg.StickerMessage
 
 		if t.ContextInfo.StanzaID != nil {
-			if msg.StickerMessage.ContextInfo == nil {
-				msg.StickerMessage.ContextInfo = &waE2E.ContextInfo{
+			if stk.ContextInfo == nil {
+				stk.ContextInfo = &waE2E.ContextInfo{
 					StanzaID:      proto.String(*t.ContextInfo.StanzaID),
 					Participant:   proto.String(*t.ContextInfo.Participant),
 					QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
@@ -1340,10 +1348,62 @@ func (s *server) SendSticker() http.HandlerFunc {
 			}
 		}
 		if t.ContextInfo.MentionedJID != nil {
-			if msg.StickerMessage.ContextInfo == nil {
-				msg.StickerMessage.ContextInfo = &waE2E.ContextInfo{}
+			if stk.ContextInfo == nil {
+				stk.ContextInfo = &waE2E.ContextInfo{}
 			}
-			msg.StickerMessage.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
+			stk.ContextInfo.MentionedJID = t.ContextInfo.MentionedJID
+		}
+
+		if t.Audio != "" {
+			audioURL, err := dataurl.DecodeString(t.Audio)
+			if err != nil {
+				s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode base64 encoded Audio from payload"))
+				return
+			}
+			// Upload novo a cada envio: referência de mídia reaproveitada faz o
+			// destinatário descartar a figurinha com som.
+			audioUp, err := client.Upload(context.Background(), audioURL.Data, whatsmeow.MediaAudio)
+			if err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to upload audio: %w", err))
+				return
+			}
+			audioMime := t.AudioMimeType
+			if audioMime == "" {
+				audioMime = "audio/ogg; codecs=opus"
+			}
+			seconds := t.AudioSeconds
+			if seconds == 0 {
+				seconds = 1
+			}
+			secret := make([]byte, 32)
+			if _, err := cryptorand.Read(secret); err != nil {
+				s.Respond(w, r, http.StatusInternalServerError, fmt.Errorf("failed to generate message secret: %w", err))
+				return
+			}
+
+			stk.Mimetype = proto.String("image/webp")
+			stk.Width = proto.Uint32(512)
+			stk.Height = proto.Uint32(512)
+			stk.IsAnimated = proto.Bool(true)
+			stk.StickerSentTS = proto.Int64(time.Now().UnixMilli())
+			stk.Audio = &waE2E.StickerMessage_AudioMessage{AudioMessage: &waE2E.AudioMessage{
+				URL:               proto.String(audioUp.URL),
+				DirectPath:        proto.String(audioUp.DirectPath),
+				MediaKey:          audioUp.MediaKey,
+				Mimetype:          proto.String(audioMime),
+				FileEncSHA256:     audioUp.FileEncSHA256,
+				FileSHA256:        audioUp.FileSHA256,
+				FileLength:        proto.Uint64(uint64(len(audioURL.Data))),
+				MediaKeyTimestamp: proto.Int64(time.Now().Unix()),
+				Seconds:           proto.Uint32(seconds),
+			}}
+
+			// Formato do app Android: o secret fica só na mensagem externa e o
+			// sticker vai embrulhado em audioStickerMessage (campo 134).
+			msg = &waE2E.Message{
+				MessageContextInfo:  &waE2E.MessageContextInfo{MessageSecret: secret},
+				AudioStickerMessage: &waE2E.FutureProofMessage{Message: &waE2E.Message{StickerMessage: stk}},
+			}
 		}
 
 		resp, err = client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{ID: msgid})

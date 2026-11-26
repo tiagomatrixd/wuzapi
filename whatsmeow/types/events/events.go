@@ -410,6 +410,11 @@ func (evt *Message) UnwrapRaw() *Message {
 		evt.Message = evt.Message.GetLottieStickerMessage().GetMessage()
 		evt.IsLottieSticker = true
 	}
+	if evt.Message.GetAudioStickerMessage().GetMessage() != nil {
+		// Figurinha com som: expõe o stickerMessage interno (o áudio fica em
+		// StickerMessage.AudioMessage).
+		evt.Message = evt.Message.GetAudioStickerMessage().GetMessage()
+	}
 	if evt.Message.GetDocumentWithCaptionMessage().GetMessage() != nil {
 		evt.Message = evt.Message.GetDocumentWithCaptionMessage().GetMessage()
 		evt.IsDocumentWithCaption = true
